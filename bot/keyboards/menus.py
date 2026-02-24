@@ -7,11 +7,11 @@ def main_menu(monitoring_active: bool = False) -> InlineKeyboardMarkup:
 
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="\ud83d\udce6 \u041c\u043e\u0438 \u0442\u043e\u0432\u0430\u0440\u044b", callback_data="items_list"),
+            InlineKeyboardButton(text="📦 \u041c\u043e\u0438 \u0442\u043e\u0432\u0430\u0440\u044b", callback_data="items_list"),
             InlineKeyboardButton(text="\u2795 \u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0442\u043e\u0432\u0430\u0440", callback_data="item_add"),
         ],
         [
-            InlineKeyboardButton(text="\ud83d\udcc1 \u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u0438", callback_data="categories_list"),
+            InlineKeyboardButton(text="📁 \u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u0438", callback_data="categories_list"),
             InlineKeyboardButton(text="\u2699\ufe0f \u041d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438", callback_data="settings"),
         ],
         [
@@ -98,7 +98,7 @@ def item_detail_keyboard(item: dict) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text=toggle_text, callback_data=toggle_cb),
             InlineKeyboardButton(
-                text="\ud83d\uddd1 \u0423\u0434\u0430\u043b\u0438\u0442\u044c",
+                text="🗑 \u0423\u0434\u0430\u043b\u0438\u0442\u044c",
                 callback_data=f"item_delete_{item['id']}",
             ),
         ],
@@ -109,9 +109,9 @@ def item_detail_keyboard(item: dict) -> InlineKeyboardMarkup:
 def settings_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="\ud83d\udd04 \u0418\u043d\u0442\u0435\u0440\u0432\u0430\u043b", callback_data="setting_interval"),
-            InlineKeyboardButton(text="\ud83d\udce1 \u041f\u0440\u043e\u043a\u0441\u0438", callback_data="setting_proxy"),
-            InlineKeyboardButton(text="\ud83d\udc64 \u0424\u0438\u043b\u044c\u0442\u0440 \u043f\u0440\u043e\u0434\u0430\u0432\u0446\u043e\u0432", callback_data="setting_max_seller"),
+            InlineKeyboardButton(text="🔄 \u0418\u043d\u0442\u0435\u0440\u0432\u0430\u043b", callback_data="setting_interval"),
+            InlineKeyboardButton(text="📡 \u041f\u0440\u043e\u043a\u0441\u0438", callback_data="setting_proxy"),
+            InlineKeyboardButton(text="👤 \u0424\u0438\u043b\u044c\u0442\u0440 \u043f\u0440\u043e\u0434\u0430\u0432\u0446\u043e\u0432", callback_data="setting_max_seller"),
         ],
         [InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data="back_main")],
     ])
@@ -125,7 +125,7 @@ def back_main_keyboard() -> InlineKeyboardMarkup:
 
 def ad_alert_keyboard(url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="\ud83d\udd17 \u041e\u0442\u043a\u0440\u044b\u0442\u044c \u043e\u0431\u044a\u044f\u0432\u043b\u0435\u043d\u0438\u0435", url=url)],
+        [InlineKeyboardButton(text="🔗 \u041e\u0442\u043a\u0440\u044b\u0442\u044c \u043e\u0431\u044a\u044f\u0432\u043b\u0435\u043d\u0438\u0435", url=url)],
     ])
 
 

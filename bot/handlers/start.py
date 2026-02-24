@@ -20,7 +20,7 @@ async def _is_monitoring_active() -> bool:
 async def cmd_start(message: Message) -> None:
     active = await _is_monitoring_active()
     await message.answer(
-        "\ud83d\udd0d Avito Flipper Bot",
+        "🔍 Avito Flipper Bot",
         reply_markup=main_menu(monitoring_active=active),
     )
 
@@ -29,7 +29,7 @@ async def cmd_start(message: Message) -> None:
 async def back_to_main(callback: CallbackQuery) -> None:
     active = await _is_monitoring_active()
     await callback.message.edit_text(
-        "\ud83d\udd0d Avito Flipper Bot",
+        "🔍 Avito Flipper Bot",
         reply_markup=main_menu(monitoring_active=active),
     )
     await callback.answer()
@@ -39,7 +39,7 @@ async def back_to_main(callback: CallbackQuery) -> None:
 async def monitoring_on(callback: CallbackQuery) -> None:
     await set_setting("monitoring_enabled", "true")
     await callback.message.edit_text(
-        "\ud83d\udd0d Avito Flipper Bot",
+        "🔍 Avito Flipper Bot",
         reply_markup=main_menu(monitoring_active=True),
     )
     await callback.answer("\u25b6\ufe0f \u041c\u043e\u043d\u0438\u0442\u043e\u0440\u0438\u043d\u0433 \u0432\u043a\u043b\u044e\u0447\u0451\u043d")
@@ -49,7 +49,7 @@ async def monitoring_on(callback: CallbackQuery) -> None:
 async def monitoring_off(callback: CallbackQuery) -> None:
     await set_setting("monitoring_enabled", "false")
     await callback.message.edit_text(
-        "\ud83d\udd0d Avito Flipper Bot",
+        "🔍 Avito Flipper Bot",
         reply_markup=main_menu(monitoring_active=False),
     )
     await callback.answer("\u23f8 \u041c\u043e\u043d\u0438\u0442\u043e\u0440\u0438\u043d\u0433 \u043f\u0440\u0438\u043e\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d")

@@ -41,7 +41,7 @@ router = Router()
 async def show_items_list(callback: CallbackQuery) -> None:
     items = await get_all_items()
     active_count = sum(1 for i in items if i["is_active"])
-    text = f"\ud83d\udce6 \u041c\u043e\u0438 \u0442\u043e\u0432\u0430\u0440\u044b ({active_count} \u0430\u043a\u0442\u0438\u0432\u043d\u044b\u0445):"
+    text = f"📦 \u041c\u043e\u0438 \u0442\u043e\u0432\u0430\u0440\u044b ({active_count} \u0430\u043a\u0442\u0438\u0432\u043d\u044b\u0445):"
     if not items:
         text += "\n\n\u041f\u043e\u043a\u0430 \u043d\u0435\u0442 \u0442\u043e\u0432\u0430\u0440\u043e\u0432. \u0414\u043e\u0431\u0430\u0432\u044c\u0442\u0435 \u043f\u0435\u0440\u0432\u044b\u0439!"
     await callback.message.edit_text(text, reply_markup=items_list_keyboard(items))
@@ -60,7 +60,7 @@ async def show_item_detail(callback: CallbackQuery) -> None:
 
     stats = await get_item_stats(item_id)
     text = (
-        f"\ud83d\udce6 {item['name']}\n\n"
+        f"📦 {item['name']}\n\n"
         f"\u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f: {item.get('category_name', 'N/A')}\n"
         f"\u041f\u043e\u0440\u043e\u0433: {item['threshold_price']:,}\u20bd\n"
         f"\u0420\u044b\u043d\u043e\u0447\u043d\u0430\u044f: {item['market_price']:,}\u20bd\n"
@@ -84,7 +84,7 @@ async def activate_item(callback: CallbackQuery) -> None:
         return
     stats = await get_item_stats(item_id)
     text = (
-        f"\ud83d\udce6 {item['name']}\n\n"
+        f"📦 {item['name']}\n\n"
         f"\u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f: {item.get('category_name', 'N/A')}\n"
         f"\u041f\u043e\u0440\u043e\u0433: {item['threshold_price']:,}\u20bd\n"
         f"\u0420\u044b\u043d\u043e\u0447\u043d\u0430\u044f: {item['market_price']:,}\u20bd\n"
@@ -106,7 +106,7 @@ async def deactivate_item(callback: CallbackQuery) -> None:
         return
     stats = await get_item_stats(item_id)
     text = (
-        f"\ud83d\udce6 {item['name']}\n\n"
+        f"📦 {item['name']}\n\n"
         f"\u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f: {item.get('category_name', 'N/A')}\n"
         f"\u041f\u043e\u0440\u043e\u0433: {item['threshold_price']:,}\u20bd\n"
         f"\u0420\u044b\u043d\u043e\u0447\u043d\u0430\u044f: {item['market_price']:,}\u20bd\n"
@@ -141,11 +141,11 @@ async def do_delete_item(callback: CallbackQuery) -> None:
 
     items = await get_all_items()
     active_count = sum(1 for i in items if i["is_active"])
-    text = f"\ud83d\udce6 \u041c\u043e\u0438 \u0442\u043e\u0432\u0430\u0440\u044b ({active_count} \u0430\u043a\u0442\u0438\u0432\u043d\u044b\u0445):"
+    text = f"📦 \u041c\u043e\u0438 \u0442\u043e\u0432\u0430\u0440\u044b ({active_count} \u0430\u043a\u0442\u0438\u0432\u043d\u044b\u0445):"
     if not items:
         text += "\n\n\u041f\u043e\u043a\u0430 \u043d\u0435\u0442 \u0442\u043e\u0432\u0430\u0440\u043e\u0432. \u0414\u043e\u0431\u0430\u0432\u044c\u0442\u0435 \u043f\u0435\u0440\u0432\u044b\u0439!"
     await callback.message.edit_text(text, reply_markup=items_list_keyboard(items))
-    await callback.answer("\ud83d\uddd1 \u0422\u043e\u0432\u0430\u0440 \u0443\u0434\u0430\u043b\u0451\u043d")
+    await callback.answer("🗑 \u0422\u043e\u0432\u0430\u0440 \u0443\u0434\u0430\u043b\u0451\u043d")
 
 
 # --- Edit Threshold ---
@@ -178,7 +178,7 @@ async def process_edit_threshold(message: Message, state: FSMContext) -> None:
     item = await get_item(item_id)
     stats = await get_item_stats(item_id)
     text = (
-        f"\ud83d\udce6 {item['name']}\n\n"
+        f"📦 {item['name']}\n\n"
         f"\u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f: {item.get('category_name', 'N/A')}\n"
         f"\u041f\u043e\u0440\u043e\u0433: {item['threshold_price']:,}\u20bd\n"
         f"\u0420\u044b\u043d\u043e\u0447\u043d\u0430\u044f: {item['market_price']:,}\u20bd\n"
@@ -218,7 +218,7 @@ async def process_edit_market(message: Message, state: FSMContext) -> None:
     item = await get_item(item_id)
     stats = await get_item_stats(item_id)
     text = (
-        f"\ud83d\udce6 {item['name']}\n\n"
+        f"📦 {item['name']}\n\n"
         f"\u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f: {item.get('category_name', 'N/A')}\n"
         f"\u041f\u043e\u0440\u043e\u0433: {item['threshold_price']:,}\u20bd\n"
         f"\u0420\u044b\u043d\u043e\u0447\u043d\u0430\u044f: {item['market_price']:,}\u20bd\n"
@@ -310,7 +310,7 @@ async def market_price_entered(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     profit = data["market_price"] - data["threshold_price"]
     text = (
-        f"\ud83d\udce6 \u041d\u043e\u0432\u044b\u0439 \u0442\u043e\u0432\u0430\u0440:\n\n"
+        f"📦 \u041d\u043e\u0432\u044b\u0439 \u0442\u043e\u0432\u0430\u0440:\n\n"
         f"\u041d\u0430\u0437\u0432\u0430\u043d\u0438\u0435: {data['item_name']}\n"
         f"\u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f: {data['category_name']}\n"
         f"\u041f\u043e\u0440\u043e\u0433: {data['threshold_price']:,}\u20bd\n"
@@ -338,7 +338,7 @@ async def confirm_add_item(callback: CallbackQuery, state: FSMContext) -> None:
     # Show items list
     items = await get_all_items()
     active_count = sum(1 for i in items if i["is_active"])
-    text = f"\ud83d\udce6 \u041c\u043e\u0438 \u0442\u043e\u0432\u0430\u0440\u044b ({active_count} \u0430\u043a\u0442\u0438\u0432\u043d\u044b\u0445):"
+    text = f"📦 \u041c\u043e\u0438 \u0442\u043e\u0432\u0430\u0440\u044b ({active_count} \u0430\u043a\u0442\u0438\u0432\u043d\u044b\u0445):"
     await callback.message.answer(text, reply_markup=items_list_keyboard(items))
 
 
@@ -360,7 +360,7 @@ async def cancel_add_item(callback: CallbackQuery, state: FSMContext) -> None:
     monitoring = await get_setting("monitoring_enabled")
     is_active = monitoring == "true"
     await callback.message.edit_text(
-        "\ud83d\udd0d Avito Flipper Bot",
+        "🔍 Avito Flipper Bot",
         reply_markup=main_menu(is_active),
     )
     await callback.answer("\u274c \u041e\u0442\u043c\u0435\u043d\u0435\u043d\u043e")
@@ -376,7 +376,7 @@ async def show_categories(callback: CallbackQuery) -> None:
         count = await get_items_count_by_category(cat["id"])
         cats_with_counts.append({**cat, "items_count": count})
 
-    text = "\ud83d\udcc1 \u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u0438:"
+    text = "📁 \u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u0438:"
     if not categories:
         text += "\n\n\u041f\u043e\u043a\u0430 \u043d\u0435\u0442 \u043a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u0439."
     await callback.message.edit_text(

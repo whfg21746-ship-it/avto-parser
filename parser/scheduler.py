@@ -42,28 +42,28 @@ def _format_alert(item: dict, ad_data: dict, verdict: dict) -> str:
     params_str = ad_data.get("params_str", "")
 
     lines = [
-        "\ud83d\udd25 \u041d\u043e\u0432\u0430\u044f \u043d\u0430\u0445\u043e\u0434\u043a\u0430!",
+        "🔥 \u041d\u043e\u0432\u0430\u044f \u043d\u0430\u0445\u043e\u0434\u043a\u0430!",
         "",
-        f"\ud83d\udcf1 {item['name']}",
-        f"\ud83d\udcb0 {ad_data.get('price', 0):,}\u20bd (\u0440\u044b\u043d\u043e\u043a: {item['market_price']:,}\u20bd)",
-        f"\ud83d\udccd {ad_data.get('city', 'N/A')}",
-        f"\ud83d\udd17 {ad_data.get('url', '')}",
+        f"📱 {item['name']}",
+        f"💰 {ad_data.get('price', 0):,}\u20bd (\u0440\u044b\u043d\u043e\u043a: {item['market_price']:,}\u20bd)",
+        f"📍 {ad_data.get('city', 'N/A')}",
+        f"🔗 {ad_data.get('url', '')}",
     ]
 
     if params_str and params_str != "N/A":
-        lines.append(f"\n\ud83d\udcdd {params_str}")
+        lines.append(f"\n📝 {params_str}")
 
     lines.extend([
         "",
-        f"\ud83e\udd16 \u041e\u0446\u0435\u043d\u043a\u0430 AI ({score}/10):",
+        f"🤖 \u041e\u0446\u0435\u043d\u043a\u0430 AI ({score}/10):",
         f"\u0421\u043e\u0441\u0442\u043e\u044f\u043d\u0438\u0435: {condition_ru}",
         f"\u26a0\ufe0f {comment}",
-        f"\ud83d\udcb5 \u041f\u0440\u043e\u0444\u0438\u0442: ~{profit:,}\u20bd",
+        f"💵 \u041f\u0440\u043e\u0444\u0438\u0442: ~{profit:,}\u20bd",
     ])
 
     if red_flags:
         flags_str = ", ".join(red_flags)
-        lines.append(f"\ud83d\udea9 \u041a\u0440\u0430\u0441\u043d\u044b\u0435 \u0444\u043b\u0430\u0433\u0438: {flags_str}")
+        lines.append(f"🚩 \u041a\u0440\u0430\u0441\u043d\u044b\u0435 \u0444\u043b\u0430\u0433\u0438: {flags_str}")
 
     lines.append(f"\u2705 \u0420\u0435\u043a\u043e\u043c\u0435\u043d\u0434\u0430\u0446\u0438\u044f: {rec_ru}")
 
