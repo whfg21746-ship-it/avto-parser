@@ -240,6 +240,29 @@ async def test():
             r2, html2 = await fetch_page(s, detail_url)
             if html2:
                 print(f"HTTP 200, {len(html2)} bytes")
+
+                # Diagnostic: show script types on detail page
+                soup2 = BeautifulSoup(html2, "html.parser")
+                script_types2 = {}
+                for sc in soup2.select("script"):
+                    st = sc.get("type", "(none)")
+                    script_types2[st] = script_types2.get(st, 0) + 1
+                print(f"  Script types: {script_types2}")
+
+                # Check for various data patterns
+                import re
+                patterns = {
+                    "window.__initialData__": r"window\.__initialData__",
+                    "window.__APP_CONFIG__": r"window\.__APP_CONFIG__",
+                    "window.__PRELOADED_STATE__": r"window\.__PRELOADED_STATE__",
+                    "buyerItem": r'"buyerItem"',
+                    "item-view": r'data-marker="item-view"',
+                    "description": r'itemprop="description"',
+                }
+                for name, pat in patterns.items():
+                    if re.search(pat, html2):
+                        print(f"  Found pattern: {name}")
+
                 raw2 = extract_raw_json(html2)
                 if raw2:
                     state2 = get_state(raw2)
@@ -274,10 +297,49 @@ async def test():
                                 print(f"  params ({len(params)}): {json.dumps(params[:3], ensure_ascii=False)[:300]}")
                             break
                     else:
-                        print("  Could not find item data")
+                        print("  Could not find item data in JSON")
                         print(f"  state keys: {list(state2.keys())[:15]}")
                 else:
-                    print("  No JSON in detail page")
+                    print("  No mime/invalid JSON found!")
+                    # Try to extract data from other script tags
+                    for sc in soup2.select("script"):
+                        text = sc.text.strip()
+                        if not text or len(text) < 100:
+                            continue
+                        sc_type = sc.get("type", "(none)")
+                        # Look for JSON-like data in script tags
+                        if sc_type == "application/json":
+                            try:
+                                data = json.loads(text)
+                                if isinstance(data, dict):
+                                    print(f"  application/json script: keys={list(data.keys())[:10]}")
+                            except Exception:
+                                pass
+                        # Look for window.__initialData__
+                        if "initialData" in text or "INITIAL" in text:
+                            print(f"  Found initialData in {sc_type} script ({len(text)} chars)")
+                            # Try to extract
+                            m = re.search(r'window\.__initialData__\s*=\s*"(.+?)"\s*;', text)
+                            if m:
+                                print(f"    __initialData__ (encoded): {len(m.group(1))} chars")
+                                try:
+                                    decoded = json.loads(f'"{m.group(1)}"')
+                                    parsed = json.loads(decoded)
+                                    print(f"    Decoded keys: {list(parsed.keys())[:10]}")
+                                    state_d = parsed.get("state", parsed)
+                                    if isinstance(state_d, dict):
+                                        for try_path in ["buyerItem", "item", "data.buyerItem", "data.item"]:
+                                            obj = state_d
+                                            for part in try_path.split("."):
+                                                obj = obj.get(part, {}) if isinstance(obj, dict) else {}
+                                            if isinstance(obj, dict) and (obj.get("title") or obj.get("description")):
+                                                print(f"\n    Item data at '{try_path}':")
+                                                print(f"      title: {obj.get('title', '?')}")
+                                                desc = obj.get("description", "")
+                                                print(f"      description: {desc[:100]}..." if desc else "      description: (none)")
+                                                break
+                                except Exception as e:
+                                    print(f"    Parse error: {e}")
             else:
                 print(f"  Detail page failed")
 
