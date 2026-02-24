@@ -10,6 +10,7 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession
 
+from parser.cookie_provider import CookieProvider
 from parser.proxy_manager import ProxyManager
 
 logger = logging.getLogger(__name__)
@@ -49,8 +50,13 @@ class AvitoAPI:
     maintained) and does not require any API key.
     """
 
-    def __init__(self, proxy_manager: ProxyManager) -> None:
+    def __init__(
+        self,
+        proxy_manager: ProxyManager,
+        cookie_provider: CookieProvider | None = None,
+    ) -> None:
         self.proxy_manager = proxy_manager
+        self.cookie_provider = cookie_provider
         self._session: AsyncSession | None = None
         self._current_profile: str | None = None
         self._warmed = False
@@ -73,7 +79,18 @@ class AvitoAPI:
             timeout=30,
         )
 
-        # Pre-warm: visit the main page to get cookies (like a real user)
+        # Inject Playwright cookies (including ft fingerprint) if available
+        if self.cookie_provider:
+            try:
+                cookies = await self.cookie_provider.ensure_cookies()
+                for name, value in cookies.items():
+                    self._session.cookies.set(name, value, domain=".avito.ru")
+                if cookies:
+                    logger.debug("Injected %d cookies from provider", len(cookies))
+            except Exception as e:
+                logger.warning("Failed to get cookies from provider: %s", e)
+
+        # Pre-warm: visit the main page to get server-side cookies
         if not self._warmed:
             try:
                 await self._session.get(
@@ -141,6 +158,8 @@ class AvitoAPI:
                         "HTTP %d blocked, rotating session (attempt %d/3)",
                         response.status_code, attempt + 1,
                     )
+                    if self.cookie_provider:
+                        self.cookie_provider.handle_block()
                     self.proxy_manager.force_rotate()
                     session = await self._ensure_session()
                     await asyncio.sleep(delay)

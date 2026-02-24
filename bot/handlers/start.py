@@ -8,6 +8,7 @@ from aiogram.types import Message, CallbackQuery
 from bot.keyboards.menus import back_main_keyboard, main_menu
 from db.models import get_active_search_queries, get_setting, set_setting
 from parser.avito_api import AvitoAPI
+from parser.cookie_provider import CookieProvider
 from parser.proxy_manager import ProxyManager
 
 logger = logging.getLogger(__name__)
@@ -72,7 +73,9 @@ async def test_api(callback: CallbackQuery) -> None:
         proxy_list = []
 
     proxy_mgr = ProxyManager(proxy_list)
-    api = AvitoAPI(proxy_mgr)
+    first_proxy = proxy_list[0] if proxy_list else None
+    cookie_provider = CookieProvider(proxy_url=first_proxy)
+    api = AvitoAPI(proxy_mgr, cookie_provider=cookie_provider)
 
     search_queries = await get_active_search_queries()
     test_sq = search_queries[0] if search_queries else None

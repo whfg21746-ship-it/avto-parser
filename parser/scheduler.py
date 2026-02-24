@@ -14,6 +14,7 @@ from db.models import (
 )
 import config
 from parser.avito_api import AvitoAPI
+from parser.cookie_provider import CookieProvider
 from parser.model_matcher import match_listing_to_item
 from parser.proxy_manager import ProxyManager
 
@@ -87,7 +88,10 @@ async def run_scan_cycle(bot: Bot) -> None:
         proxy_list = []
 
     proxy_manager = ProxyManager(proxy_list)
-    api = AvitoAPI(proxy_manager)
+    # Use the first proxy for Playwright cookie acquisition
+    first_proxy = proxy_list[0] if proxy_list else None
+    cookie_provider = CookieProvider(proxy_url=first_proxy)
+    api = AvitoAPI(proxy_manager, cookie_provider=cookie_provider)
 
     chat_id = await get_setting("telegram_chat_id") or config.TELEGRAM_CHAT_ID
 
