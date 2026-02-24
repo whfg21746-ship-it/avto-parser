@@ -7,41 +7,6 @@ from curl_cffi.requests import AsyncSession
 PROXY = "http://cmdkdzgdyfbkpzc226887-country-RU-package-mobile:uzoiutnqjy@eum.proxydoe.com:8000"
 
 
-def deep_explore(obj, path="root", depth=0, max_depth=6):
-    """Рекурсивно показываем структуру JSON."""
-    if depth > max_depth:
-        return
-    if isinstance(obj, dict):
-        for key in list(obj.keys())[:30]:
-            val = obj[key]
-            if isinstance(val, dict):
-                size = len(json.dumps(val))
-                print(f"{'  ' * depth}{path}.{key}: dict({len(val)} keys, {size} bytes)")
-                if size > 500:
-                    deep_explore(val, f"{path}.{key}", depth + 1, max_depth)
-            elif isinstance(val, list):
-                print(f"{'  ' * depth}{path}.{key}: list({len(val)} items)")
-                if len(val) > 0 and isinstance(val[0], dict):
-                    print(f"{'  ' * (depth + 1)}[0] keys: {list(val[0].keys())[:15]}")
-                    for k in ["title", "name", "price", "id", "itemId", "url", "uri", "type"]:
-                        if k in val[0]:
-                            print(f"{'  ' * (depth + 1)}[0].{k}: {str(val[0][k])[:100]}")
-                if size_of_list(val) > 500:
-                    deep_explore(val[0] if val and isinstance(val[0], dict) else {}, f"{path}.{key}[0]", depth + 1, max_depth)
-            elif isinstance(val, str) and len(val) > 200:
-                print(f"{'  ' * depth}{path}.{key}: str({len(val)} chars) = {val[:100]}...")
-            else:
-                val_str = str(val)[:100]
-                print(f"{'  ' * depth}{path}.{key}: {val_str}")
-
-
-def size_of_list(lst):
-    try:
-        return len(json.dumps(lst))
-    except Exception:
-        return 0
-
-
 async def test():
     s = AsyncSession(
         impersonate="chrome136",
@@ -60,54 +25,83 @@ async def test():
             "Accept-Language": "ru-RU,ru;q=0.9",
         },
     )
-    print(f"Status: {r.status_code}")
+    print(f"Status: {r.status_code}, Length: {len(r.text)}")
     page = r.text
 
-    # 1. __staticRouterHydrationData
-    print("\n=== __staticRouterHydrationData ===")
-    match = re.search(r'__staticRouterHydrationData\s*=\s*JSON\.parse\("(.+?)"\);\s*</script>', page, re.DOTALL)
-    if match:
-        raw = match.group(1)
-        unescaped = raw.replace('\\"', '"').replace('\\\\', '\\')
-        try:
-            data = json.loads(unescaped)
-            print("Exploring structure:")
-            deep_explore(data, "router", 0, 5)
-            with open("/root/avto-parser/debug_router.json", "w") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            print("\nSaved to debug_router.json")
-        except json.JSONDecodeError as e:
-            print(f"Parse error: {e}")
-    else:
-        print("Not found!")
+    # 1. Ищем data-marker атрибуты (Avito использует их)
+    print("\n=== data-marker атрибуты ===")
+    markers = re.findall(r'data-marker="([^"]+)"', page)
+    unique_markers = sorted(set(markers))
+    print(f"Found {len(markers)} total, {len(unique_markers)} unique:")
+    for m in unique_markers[:30]:
+        count = markers.count(m)
+        print(f"  {m}: {count}")
 
-    # 2. window.__mfe__ (тоже URL-encoded)
-    print("\n=== window.__mfe__ ===")
-    match = re.search(r'window\.__mfe__\s*=\s*"(.*?)";', page)
-    if match:
-        decoded = unquote(match.group(1))
-        try:
-            mfe = json.loads(decoded)
-            print(f"Keys: {list(mfe.keys())[:20]}")
-            deep_explore(mfe, "mfe", 0, 3)
-        except json.JSONDecodeError:
-            print(f"Not JSON, length: {len(decoded)}")
-    else:
-        print("Not found!")
+    # 2. Ищем ссылки на объявления
+    print("\n=== Ссылки на объявления ===")
+    ad_links = re.findall(r'href="(/[^"]*?)"\s[^>]*data-marker="item-title"', page)
+    if not ad_links:
+        ad_links = re.findall(r'data-marker="item-title"[^>]*href="(/[^"]*?)"', page)
+    if not ad_links:
+        # Более общий паттерн — ссылки с ID объявления
+        ad_links = re.findall(r'href="(/[\w/-]+_(\d{8,}))"', page)
+    print(f"Found {len(ad_links)} ad links:")
+    for link in ad_links[:5]:
+        print(f"  {link}")
 
-    # 3. Ищем внутренний API endpoint в JS коде
-    print("\n=== API endpoints в JS ===")
-    api_patterns = [
-        r'["\'](/api/\d+/[^"\']+)["\']',
-        r'["\']https?://[^"\']*avito[^"\']*api[^"\']+["\']',
-        r'fetch\(["\']([^"\']+)["\']',
-    ]
-    found_apis = set()
-    for pattern in api_patterns:
-        for m in re.finditer(pattern, page):
-            found_apis.add(m.group(1) if m.lastindex else m.group(0))
-    for api in sorted(found_apis)[:20]:
-        print(f"  {api}")
+    # 3. Ищем item контейнеры
+    print("\n=== Item контейнеры ===")
+    item_divs = re.findall(r'data-marker="item\b([^"]*)"', page)
+    print(f"data-marker='item*': {len(item_divs)} matches")
+    for m in set(item_divs)[:10]:
+        print(f"  item{m}: {item_divs.count(m)}")
+
+    # 4. Ищем itemId / data-item-id
+    print("\n=== Item IDs ===")
+    item_ids = re.findall(r'data-item-id="(\d+)"', page)
+    if not item_ids:
+        item_ids = re.findall(r'data-id="(\d+)"', page)
+    if not item_ids:
+        item_ids = re.findall(r'"itemId"\s*:\s*"?(\d+)"?', page)
+    print(f"Found {len(item_ids)} item IDs:")
+    for iid in item_ids[:5]:
+        print(f"  {iid}")
+
+    # 5. Ищем цены в HTML
+    print("\n=== Цены в HTML ===")
+    # Avito часто использует meta content для цен
+    prices_meta = re.findall(r'content="(\d[\d\s]*)"[^>]*itemprop="price"', page)
+    if not prices_meta:
+        prices_meta = re.findall(r'itemprop="price"[^>]*content="(\d[\d\s]*)"', page)
+    # Также ищем в тексте
+    prices_text = re.findall(r'>(\d{1,3}(?:\s\d{3})*)\s*₽<', page)
+    if not prices_text:
+        prices_text = re.findall(r'(\d{1,3}(?:[\s\xa0]\d{3})+)\s*₽', page)
+    print(f"Meta prices: {prices_meta[:5]}")
+    print(f"Text prices: {prices_text[:5]}")
+
+    # 6. Пробуем вытащить конкретное объявление из HTML
+    print("\n=== Пример объявления (raw HTML) ===")
+    # Ищем блок с data-marker="item"
+    item_block = re.search(r'data-marker="item"[^>]*>(.*?)</div>\s*</div>\s*</div>', page, re.DOTALL)
+    if item_block:
+        block = item_block.group(0)[:1000]
+        print(block)
+    else:
+        # Ищем любой блок с "item" в marker
+        item_block = re.search(r'(data-marker="item[^"]*"[^>]*>)', page)
+        if item_block:
+            # Показываем окружающий контекст
+            start = item_block.start()
+            print(f"Context around first item marker:")
+            print(page[start:start + 800])
+
+    # 7. Смотрим структуру крупных data-* атрибутов
+    print("\n=== Крупные data-* атрибуты ===")
+    for match in re.finditer(r'data-([\w-]+)="([^"]{200,})"', page):
+        name = match.group(1)
+        value = match.group(2)[:200]
+        print(f"  data-{name} ({len(match.group(2))} chars): {value}...")
 
     s.close()
 
