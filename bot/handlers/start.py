@@ -6,7 +6,7 @@ from aiogram.filters import CommandStart
 from aiogram.types import Message, CallbackQuery
 
 from bot.keyboards.menus import back_main_keyboard, main_menu
-from db.models import get_active_items, get_setting, set_setting
+from db.models import get_active_search_queries, get_setting, set_setting
 from parser.avito_api import AvitoAPI
 from parser.proxy_manager import ProxyManager
 
@@ -23,7 +23,7 @@ async def _is_monitoring_active() -> bool:
 async def cmd_start(message: Message) -> None:
     active = await _is_monitoring_active()
     await message.answer(
-        "🔍 Avito Flipper Bot",
+        "\U0001f50d Avito Flipper Bot",
         reply_markup=main_menu(monitoring_active=active),
     )
 
@@ -32,7 +32,7 @@ async def cmd_start(message: Message) -> None:
 async def back_to_main(callback: CallbackQuery) -> None:
     active = await _is_monitoring_active()
     await callback.message.edit_text(
-        "🔍 Avito Flipper Bot",
+        "\U0001f50d Avito Flipper Bot",
         reply_markup=main_menu(monitoring_active=active),
     )
     await callback.answer()
@@ -42,20 +42,20 @@ async def back_to_main(callback: CallbackQuery) -> None:
 async def monitoring_on(callback: CallbackQuery) -> None:
     await set_setting("monitoring_enabled", "true")
     await callback.message.edit_text(
-        "🔍 Avito Flipper Bot",
+        "\U0001f50d Avito Flipper Bot",
         reply_markup=main_menu(monitoring_active=True),
     )
-    await callback.answer("\u25b6\ufe0f \u041c\u043e\u043d\u0438\u0442\u043e\u0440\u0438\u043d\u0433 \u0432\u043a\u043b\u044e\u0447\u0451\u043d")
+    await callback.answer("\u25b6\ufe0f Мониторинг включён")
 
 
 @router.callback_query(F.data == "monitoring_off")
 async def monitoring_off(callback: CallbackQuery) -> None:
     await set_setting("monitoring_enabled", "false")
     await callback.message.edit_text(
-        "🔍 Avito Flipper Bot",
+        "\U0001f50d Avito Flipper Bot",
         reply_markup=main_menu(monitoring_active=False),
     )
-    await callback.answer("\u23f8 \u041c\u043e\u043d\u0438\u0442\u043e\u0440\u0438\u043d\u0433 \u043f\u0440\u0438\u043e\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d")
+    await callback.answer("\u23f8 Мониторинг приостановлен")
 
 
 # --- Test Avito API ---
@@ -74,21 +74,22 @@ async def test_api(callback: CallbackQuery) -> None:
     proxy_mgr = ProxyManager(proxy_list)
     api = AvitoAPI(proxy_mgr)
 
-    items = await get_active_items()
-    test_item = items[0] if items else None
+    search_queries = await get_active_search_queries()
+    test_sq = search_queries[0] if search_queries else None
 
-    if not test_item:
+    if not test_sq:
         await callback.message.edit_text(
-            "\u274c Нет активных товаров для теста.\nДобавь товары и попробуй снова.",
+            "\u274c Нет активных поисковых запросов для теста.\n"
+            "Добавь поисковый запрос и попробуй снова.",
             reply_markup=back_main_keyboard(),
         )
         await api.close()
         return
 
-    lines = [f"🔬 Тест API для: {test_item['name']}\n"]
+    lines = [f'\U0001f52c Тест API для запроса: "{test_sq["keyword"]}"\n']
 
     try:
-        listings = await api.search_items(test_item)
+        listings = await api.search_by_keyword(test_sq)
         lines.append(f"\u2705 Поиск: найдено {len(listings)} объявлений")
 
         if listings:
@@ -115,7 +116,7 @@ async def test_api(callback: CallbackQuery) -> None:
             except Exception as e:
                 lines.append(f"\n\u274c Ошибка загрузки деталей: {e}")
         else:
-            lines.append("\n\u26a0\ufe0f 0 результатов. Возможно API заблокирован или запрос неверный.")
+            lines.append("\n\u26a0\ufe0f 0 результатов. Возможно API заблокирован.")
     except Exception as e:
         lines.append(f"\u274c Ошибка поиска: {e}")
     finally:

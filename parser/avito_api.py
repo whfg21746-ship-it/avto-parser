@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import random
 from typing import Any
@@ -117,13 +116,17 @@ class AvitoAPI:
         logger.error("All retries exhausted for %s", url)
         return None
 
-    async def search_items(self, item: dict) -> list[dict]:
-        """Search Avito listings for a given monitored item."""
+    async def search_by_keyword(self, search_query: dict) -> list[dict]:
+        """Search Avito listings using a broad keyword query.
+
+        Args:
+            search_query: dict with keys: keyword, avito_category_id, price_max
+        """
         params = {
             "key": config.AVITO_API_KEY,
             "locationId": config.AVITO_LOCATION_ID,
+            "query": search_query["keyword"],
             "sort": "date",
-            "priceMax": item["threshold_price"],
             "withImagesOnly": 1,
             "privateOnly": 1,
             "limit": 50,
@@ -131,22 +134,11 @@ class AvitoAPI:
             "display": "list",
         }
 
-        # Add category ID
-        if item.get("avito_category_id"):
-            params["categoryId"] = item["avito_category_id"]
+        if search_query.get("avito_category_id"):
+            params["categoryId"] = search_query["avito_category_id"]
 
-        # Add search query as fallback if no avito_params
-        avito_params = {}
-        if item.get("avito_params"):
-            try:
-                avito_params = json.loads(item["avito_params"])
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        if avito_params:
-            params.update(avito_params)
-        elif item.get("search_query"):
-            params["query"] = item["search_query"]
+        if search_query.get("price_max"):
+            params["priceMax"] = search_query["price_max"]
 
         data = await self._request(ITEMS_ENDPOINT, params)
         if not data:
@@ -160,12 +152,23 @@ class AvitoAPI:
             ad_id = str(value.get("id", ""))
             if not ad_id:
                 continue
+
+            # Extract listing params/attributes from search results
+            listing_params = {}
+            for param in value.get("params", []):
+                if isinstance(param, dict):
+                    title = param.get("title", "")
+                    val = param.get("value", "")
+                    if title and val:
+                        listing_params[title] = val
+
             results.append({
                 "ad_id": ad_id,
                 "title": value.get("title", ""),
                 "price": _extract_price(value.get("price", 0)),
                 "url": f"https://www.avito.ru{value.get('uri', '')}",
                 "city": value.get("location", {}).get("name", ""),
+                "params": listing_params,
             })
 
         return results

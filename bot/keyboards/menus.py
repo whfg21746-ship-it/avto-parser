@@ -9,15 +9,16 @@ def main_menu(monitoring_active: bool = False) -> InlineKeyboardMarkup:
 
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📦 Мои товары", callback_data="items_list"),
+            InlineKeyboardButton(text="\U0001f4e6 Мои товары", callback_data="items_list"),
             InlineKeyboardButton(text="\u2795 Добавить товар", callback_data="item_add"),
         ],
         [
-            InlineKeyboardButton(text="📁 Категории", callback_data="categories_list"),
-            InlineKeyboardButton(text="\u2699\ufe0f Настройки", callback_data="settings"),
+            InlineKeyboardButton(text="\U0001f50d Поисковые запросы", callback_data="search_queries_list"),
+            InlineKeyboardButton(text="\U0001f4c1 Категории", callback_data="categories_list"),
         ],
         [
-            InlineKeyboardButton(text="🔬 Тест API", callback_data="test_api"),
+            InlineKeyboardButton(text="\u2699\ufe0f Настройки", callback_data="settings"),
+            InlineKeyboardButton(text="\U0001f52c Тест API", callback_data="test_api"),
         ],
         [
             InlineKeyboardButton(text=toggle_text, callback_data=toggle_cb),
@@ -66,8 +67,6 @@ def categories_list_keyboard(categories: list[dict]) -> InlineKeyboardMarkup:
 def categories_nav_keyboard(categories: list[dict]) -> InlineKeyboardMarkup:
     """'Мои товары' screen — shows categories as folders to browse items."""
     rows: list[list[InlineKeyboardButton]] = []
-    total_items = sum(c["items_count"] for c in categories)
-    active_items = sum(c.get("active_count", 0) for c in categories)
     for cat in categories:
         active = cat.get("active_count", 0)
         rows.append([InlineKeyboardButton(
@@ -166,7 +165,7 @@ def item_detail_keyboard(item: dict) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text=toggle_text, callback_data=toggle_cb),
             InlineKeyboardButton(
-                text="🗑 Удалить",
+                text="\U0001f5d1 Удалить",
                 callback_data=f"item_delete_{item['id']}",
             ),
         ],
@@ -177,18 +176,93 @@ def item_detail_keyboard(item: dict) -> InlineKeyboardMarkup:
     ])
 
 
+# --- Search Queries keyboards ---
+
+def search_queries_list_keyboard(queries: list[dict]) -> InlineKeyboardMarkup:
+    """List of search queries with item counts."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for sq in queries:
+        status = "\u2705" if sq["is_active"] else "\u23f8"
+        count = sq.get("items_count", 0)
+        text = f'{status} "{sq["keyword"]}" — {count} мод.'
+        if len(text) > 60:
+            text = text[:57] + "..."
+        rows.append([InlineKeyboardButton(
+            text=text,
+            callback_data=f"sq_view_{sq['id']}",
+        )])
+    rows.append([InlineKeyboardButton(
+        text="\u2795 Добавить запрос",
+        callback_data="sq_add",
+    )])
+    rows.append([InlineKeyboardButton(text="\u2b05\ufe0f Назад", callback_data="back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def search_query_detail_keyboard(sq: dict) -> InlineKeyboardMarkup:
+    """Detail view for a search query."""
+    toggle_text = "\u23f8 Выключить" if sq["is_active"] else "\u25b6\ufe0f Включить"
+    toggle_cb = f"sq_deactivate_{sq['id']}" if sq["is_active"] else f"sq_activate_{sq['id']}"
+
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=toggle_text, callback_data=toggle_cb),
+            InlineKeyboardButton(
+                text="\U0001f5d1 Удалить",
+                callback_data=f"sq_delete_{sq['id']}",
+            ),
+        ],
+        [InlineKeyboardButton(
+            text="\u2b05\ufe0f Назад",
+            callback_data="search_queries_list",
+        )],
+    ])
+
+
+def search_query_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="\u2705 Подтвердить", callback_data="sq_confirm"),
+            InlineKeyboardButton(text="\u274c Отмена", callback_data="sq_cancel"),
+        ],
+    ])
+
+
+def search_queries_picker_keyboard(queries: list[dict]) -> InlineKeyboardMarkup:
+    """Search query picker for the 'Add Item' flow."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for sq in queries:
+        text = f'"{sq["keyword"]}" ({sq.get("category_name", "?")})'
+        if len(text) > 60:
+            text = text[:57] + "..."
+        rows.append([InlineKeyboardButton(
+            text=text,
+            callback_data=f"sq_pick_{sq['id']}",
+        )])
+    rows.append([InlineKeyboardButton(text="\u2b05\ufe0f Назад", callback_data="back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def confirm_delete_sq_keyboard(query_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="\u2705 Да, удалить",
+                callback_data=f"sq_delete_confirm_{query_id}",
+            ),
+            InlineKeyboardButton(text="\u274c Отмена", callback_data=f"sq_view_{query_id}"),
+        ],
+    ])
+
+
 def settings_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🔄 Интервал", callback_data="setting_interval"),
-            InlineKeyboardButton(text="📡 Прокси", callback_data="setting_proxy"),
+            InlineKeyboardButton(text="\U0001f504 Интервал", callback_data="setting_interval"),
+            InlineKeyboardButton(text="\U0001f4e1 Прокси", callback_data="setting_proxy"),
         ],
         [
-            InlineKeyboardButton(text="👤 Фильтр продавцов", callback_data="setting_max_seller"),
-        ],
-        [
-            InlineKeyboardButton(text="🔍 Найти параметры", callback_data="discover_params"),
-            InlineKeyboardButton(text="🔄 Обновить все", callback_data="refresh_params"),
+            InlineKeyboardButton(text="\U0001f464 Фильтр продавцов", callback_data="setting_max_seller"),
         ],
         [InlineKeyboardButton(text="\u2b05\ufe0f Назад", callback_data="back_main")],
     ])
@@ -202,7 +276,7 @@ def back_main_keyboard() -> InlineKeyboardMarkup:
 
 def ad_alert_keyboard(url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔗 Открыть объявление", url=url)],
+        [InlineKeyboardButton(text="\U0001f517 Открыть объявление", url=url)],
     ])
 
 

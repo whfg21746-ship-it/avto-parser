@@ -1,15 +1,12 @@
-import json
 import logging
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-import config
 from bot.keyboards.menus import (
     ITEMS_PER_PAGE,
     back_main_keyboard,
-    categories_keyboard,
     categories_list_keyboard,
     categories_nav_keyboard,
     category_items_keyboard,
@@ -17,6 +14,7 @@ from bot.keyboards.menus import (
     item_confirm_keyboard,
     item_detail_keyboard,
     main_menu,
+    search_queries_picker_keyboard,
 )
 from bot.states.item_states import AddCategoryFSM, AddItemFSM, EditItemFSM
 from db.models import (
@@ -25,17 +23,17 @@ from db.models import (
     delete_item,
     get_active_categories,
     get_all_categories,
+    get_all_search_queries,
     get_category,
     get_item,
     get_item_stats,
     get_items_by_category,
     get_items_count_by_category,
+    get_search_query,
     get_setting,
-    update_category_avito_id,
     update_item_field,
 )
-from parser.param_discovery import ParamDiscovery
-from parser.proxy_manager import ProxyManager
+from parser.model_matcher import extract_storage_from_name, generate_model_pattern
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -43,11 +41,15 @@ router = Router()
 
 def _item_detail_text(item: dict, stats: dict) -> str:
     status = "\u2705 Активен" if item["is_active"] else "\u23f8 Выключен"
+    storage = f"{item['storage_gb']} GB" if item.get("storage_gb") else "N/A"
+    keyword = item.get("search_keyword", "N/A")
     return (
-        f"📦 {item['name']}\n\n"
+        f"\U0001f4e6 {item['name']}\n\n"
         f"Статус: {status}\n"
         f"Категория: {item.get('category_name', 'N/A')}\n"
-        f"Поиск: {item.get('search_query', item['name'])}\n"
+        f"Запрос: {keyword}\n"
+        f"Паттерн: {item.get('model_pattern', 'N/A')}\n"
+        f"Память: {storage}\n"
         f"Порог: {item['threshold_price']:,}\u20bd\n"
         f"Рыночная: {item['market_price']:,}\u20bd\n"
         f"Профит: ~{item['market_price'] - item['threshold_price']:,}\u20bd\n"
@@ -84,7 +86,7 @@ async def show_items_list(callback: CallbackQuery) -> None:
 
     total = sum(c["items_count"] for c in cats_data)
     active = sum(c["active_count"] for c in cats_data)
-    text = f"📦 Мои товары ({active}/{total} активных)\n\nВыбери категорию:"
+    text = f"\U0001f4e6 Мои товары ({active}/{total} активных)\n\nВыбери категорию:"
     await callback.message.edit_text(text, reply_markup=categories_nav_keyboard(cats_data))
     await callback.answer()
 
@@ -104,7 +106,7 @@ async def show_category_items(callback: CallbackQuery) -> None:
 
     total = await get_items_count_by_category(category_id)
     items = await get_items_by_category(category_id, offset=page * ITEMS_PER_PAGE, limit=ITEMS_PER_PAGE)
-    text = f"📦 {category['name']} ({total} тов.)"
+    text = f"\U0001f4e6 {category['name']} ({total} тов.)"
     await callback.message.edit_text(
         text,
         reply_markup=category_items_keyboard(items, category_id, page, total, source="cat_items"),
@@ -127,7 +129,7 @@ async def show_category_view(callback: CallbackQuery) -> None:
 
     total = await get_items_count_by_category(category_id)
     items = await get_items_by_category(category_id, offset=page * ITEMS_PER_PAGE, limit=ITEMS_PER_PAGE)
-    text = f"📁 {category['name']} (avito ID: {category['avito_category_id']}) — {total} тов."
+    text = f"\U0001f4c1 {category['name']} (avito ID: {category['avito_category_id']}) — {total} тов."
     await callback.message.edit_text(
         text,
         reply_markup=category_items_keyboard(items, category_id, page, total, source="cat_view"),
@@ -208,19 +210,19 @@ async def do_delete_item(callback: CallbackQuery) -> None:
     item = await get_item(item_id)
     cat_id = item["category_id"] if item else None
     await delete_item(item_id)
-    await callback.answer("🗑 Товар удалён")
+    await callback.answer("\U0001f5d1 Товар удалён")
 
     if cat_id:
         total = await get_items_count_by_category(cat_id)
         items = await get_items_by_category(cat_id, offset=0, limit=ITEMS_PER_PAGE)
         category = await get_category(cat_id)
-        text = f"📦 {category['name']} ({total} тов.)" if category else "📦 Товары"
+        text = f"\U0001f4e6 {category['name']} ({total} тов.)" if category else "\U0001f4e6 Товары"
         await callback.message.edit_text(
             text,
             reply_markup=category_items_keyboard(items, cat_id, 0, total, source="cat_items"),
         )
     else:
-        await callback.message.edit_text("🗑 Товар удалён.", reply_markup=back_main_keyboard())
+        await callback.message.edit_text("\U0001f5d1 Товар удалён.", reply_markup=back_main_keyboard())
 
 
 # --- Edit Threshold ---
@@ -301,25 +303,36 @@ async def process_edit_market(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "item_add")
 async def start_add_item(callback: CallbackQuery, state: FSMContext) -> None:
-    categories = await get_active_categories()
-    if not categories:
-        await callback.answer("Сначала добавьте категорию!")
+    queries = await get_all_search_queries()
+    if not queries:
+        await callback.answer("Сначала добавьте поисковый запрос!")
         return
-    await state.set_state(AddItemFSM.choosing_category)
+    await state.set_state(AddItemFSM.choosing_search_query)
     await callback.message.edit_text(
-        "Выбери категорию:",
-        reply_markup=categories_keyboard(categories),
+        "Выбери поисковый запрос для нового товара:",
+        reply_markup=search_queries_picker_keyboard(queries),
     )
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("cat_select_"), AddItemFSM.choosing_category)
-async def category_chosen(callback: CallbackQuery, state: FSMContext) -> None:
-    category_id = int(callback.data.split("_")[-1])
-    category = await get_category(category_id)
-    await state.update_data(category_id=category_id, category_name=category["name"])
+@router.callback_query(F.data.startswith("sq_pick_"), AddItemFSM.choosing_search_query)
+async def search_query_chosen(callback: CallbackQuery, state: FSMContext) -> None:
+    query_id = int(callback.data.split("_")[-1])
+    sq = await get_search_query(query_id)
+    if not sq:
+        await callback.answer("Запрос не найден")
+        return
+    await state.update_data(
+        search_query_id=query_id,
+        search_keyword=sq["keyword"],
+        category_id=sq["category_id"],
+        category_name=sq.get("category_name", ""),
+    )
     await state.set_state(AddItemFSM.entering_name)
-    await callback.message.edit_text("Введи название товара:")
+    await callback.message.edit_text(
+        f'Запрос: "{sq["keyword"]}"\n\n'
+        "Введи название товара (напр. iPhone 15 Pro Max 256GB):"
+    )
     await callback.answer()
 
 
@@ -329,50 +342,54 @@ async def item_name_entered(message: Message, state: FSMContext) -> None:
     if not name:
         await message.answer("Название не может быть пустым. Попробуй снова:")
         return
-    await state.update_data(item_name=name)
 
-    # Auto-discover Avito params
-    status_msg = await message.answer("🔍 Ищу параметры Avito для этого товара...")
+    # Auto-generate model pattern and extract storage
+    pattern = generate_model_pattern(name)
+    storage = extract_storage_from_name(name)
 
-    proxy_raw = await get_setting("proxy_list")
-    try:
-        proxy_list = json.loads(proxy_raw) if proxy_raw else []
-    except json.JSONDecodeError:
-        proxy_list = []
-    if not proxy_list:
-        proxy_list = config.PROXY_LIST
+    await state.update_data(
+        item_name=name,
+        model_pattern=pattern,
+        storage_gb=storage,
+    )
 
-    proxy_manager = ProxyManager(proxy_list)
-    discovery = ParamDiscovery(proxy_manager)
+    storage_text = f"{storage} GB" if storage else "нет (не применимо)"
+    await state.set_state(AddItemFSM.entering_model_pattern)
+    await message.answer(
+        f"Авто-паттерн: \u00ab{pattern}\u00bb\n"
+        f"Память: {storage_text}\n\n"
+        "Отправь паттерн если нужно изменить, или \u00abок\u00bb чтобы оставить:"
+    )
 
-    try:
-        result = await discovery.discover_and_verify(name)
-    except Exception as e:
-        logger.error("Discovery error for %s: %s", name, e)
-        result = {"category_id": None, "params": {}, "error": str(e)}
-    finally:
-        await discovery.close()
 
-    if result.get("category_id") and not result.get("error"):
-        params_json = json.dumps(result.get("params", {}))
-        await state.update_data(
-            avito_params=params_json,
-            discovered_category_id=result["category_id"],
-        )
-        verified = result.get("verified", False)
-        v_text = " (проверено)" if verified else ""
-        await status_msg.edit_text(
-            f"\u2705 Параметры найдены{v_text}!\n"
-            f"categoryId: {result['category_id']}\n"
-            f"Фильтры: {len(result.get('params', {}))} шт.\n"
-            f"Метод: {result.get('discovered_via', '?')}"
-        )
+@router.message(AddItemFSM.entering_model_pattern)
+async def model_pattern_entered(message: Message, state: FSMContext) -> None:
+    text = message.text.strip()
+    if text.lower() != "ок" and text.lower() != "ok":
+        await state.update_data(model_pattern=text.lower())
+
+    await state.set_state(AddItemFSM.entering_storage)
+    data = await state.get_data()
+    storage = data.get("storage_gb")
+    storage_text = f"{storage} GB" if storage else "не задана"
+    await message.answer(
+        f"Текущая память: {storage_text}\n\n"
+        "Введи объём памяти в GB (напр. 256), или \u00abнет\u00bb если не применимо:"
+    )
+
+
+@router.message(AddItemFSM.entering_storage)
+async def storage_entered(message: Message, state: FSMContext) -> None:
+    text = message.text.strip().lower()
+    if text in ("нет", "no", "n", "-", "0"):
+        await state.update_data(storage_gb=None)
     else:
-        await state.update_data(avito_params="{}")
-        await status_msg.edit_text(
-            "\u26a0\ufe0f Параметры не найдены автоматически.\n"
-            "Будет использован текстовый поиск."
-        )
+        try:
+            storage = int(text.replace("gb", "").replace("гб", "").strip())
+            await state.update_data(storage_gb=storage)
+        except (ValueError, AttributeError):
+            await message.answer("Введи число (в GB) или \u00abнет\u00bb:")
+            return
 
     await state.set_state(AddItemFSM.entering_threshold)
     await message.answer("Введи пороговую цену (макс. цена покупки в \u20bd):")
@@ -402,10 +419,14 @@ async def market_price_entered(message: Message, state: FSMContext) -> None:
 
     data = await state.get_data()
     profit = data["market_price"] - data["threshold_price"]
+    storage_text = f"{data['storage_gb']} GB" if data.get("storage_gb") else "N/A"
     text = (
-        f"📦 Новый товар:\n\n"
+        f"\U0001f4e6 Новый товар:\n\n"
         f"Название: {data['item_name']}\n"
+        f"Запрос: \u00ab{data['search_keyword']}\u00bb\n"
         f"Категория: {data['category_name']}\n"
+        f"Паттерн: \u00ab{data['model_pattern']}\u00bb\n"
+        f"Память: {storage_text}\n"
         f"Порог: {data['threshold_price']:,}\u20bd\n"
         f"Рыночная цена: {data['market_price']:,}\u20bd\n"
         f"Примерный профит: ~{profit:,}\u20bd"
@@ -417,18 +438,14 @@ async def market_price_entered(message: Message, state: FSMContext) -> None:
 async def confirm_add_item(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     await add_item(
+        search_query_id=data["search_query_id"],
         category_id=data["category_id"],
         name=data["item_name"],
+        model_pattern=data["model_pattern"],
         threshold_price=data["threshold_price"],
         market_price=data["market_price"],
-        search_query=data["item_name"],
-        avito_params=data.get("avito_params", "{}"),
+        storage_gb=data.get("storage_gb"),
     )
-
-    # Update category's avito_category_id if we discovered one
-    discovered_cat_id = data.get("discovered_category_id")
-    if discovered_cat_id:
-        await update_category_avito_id(data["category_id"], discovered_cat_id)
 
     await state.clear()
     await callback.message.edit_text("\u2705 Товар добавлен!")
@@ -438,7 +455,7 @@ async def confirm_add_item(callback: CallbackQuery, state: FSMContext) -> None:
     total = await get_items_count_by_category(cat_id)
     items = await get_items_by_category(cat_id, offset=0, limit=ITEMS_PER_PAGE)
     category = await get_category(cat_id)
-    text = f"📦 {category['name']} ({total} тов.)"
+    text = f"\U0001f4e6 {category['name']} ({total} тов.)"
     await callback.message.answer(
         text,
         reply_markup=category_items_keyboard(items, cat_id, 0, total, source="cat_items"),
@@ -448,11 +465,11 @@ async def confirm_add_item(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "item_edit_restart", AddItemFSM.confirming)
 async def restart_add_item(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    categories = await get_active_categories()
-    await state.set_state(AddItemFSM.choosing_category)
+    queries = await get_all_search_queries()
+    await state.set_state(AddItemFSM.choosing_search_query)
     await callback.message.edit_text(
-        "Выбери категорию:",
-        reply_markup=categories_keyboard(categories),
+        "Выбери поисковый запрос:",
+        reply_markup=search_queries_picker_keyboard(queries),
     )
     await callback.answer()
 
@@ -463,7 +480,7 @@ async def cancel_add_item(callback: CallbackQuery, state: FSMContext) -> None:
     monitoring = await get_setting("monitoring_enabled")
     is_active = monitoring == "true"
     await callback.message.edit_text(
-        "🔍 Avito Flipper Bot",
+        "\U0001f50d Avito Flipper Bot",
         reply_markup=main_menu(is_active),
     )
     await callback.answer("\u274c Отменено")
@@ -479,7 +496,7 @@ async def show_categories(callback: CallbackQuery) -> None:
         count = await get_items_count_by_category(cat["id"])
         cats_with_counts.append({**cat, "items_count": count})
 
-    text = "📁 Категории:"
+    text = "\U0001f4c1 Категории:"
     if not categories:
         text += "\n\nПока нет категорий."
     await callback.message.edit_text(

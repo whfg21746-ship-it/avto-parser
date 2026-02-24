@@ -7,12 +7,14 @@ import config
 from ai.analyzer import analyze_ad
 from bot.keyboards.menus import ad_alert_keyboard
 from db.models import (
-    get_active_items,
+    get_active_search_queries,
+    get_items_by_search_query,
     get_setting,
     is_ad_seen,
     save_seen_ad,
 )
 from parser.avito_api import AvitoAPI
+from parser.model_matcher import match_listing_to_item
 from parser.proxy_manager import ProxyManager
 
 logger = logging.getLogger(__name__)
@@ -42,28 +44,28 @@ def _format_alert(item: dict, ad_data: dict, verdict: dict) -> str:
     params_str = ad_data.get("params_str", "")
 
     lines = [
-        "🔥 \u041d\u043e\u0432\u0430\u044f \u043d\u0430\u0445\u043e\u0434\u043a\u0430!",
+        "\U0001f525 \u041d\u043e\u0432\u0430\u044f \u043d\u0430\u0445\u043e\u0434\u043a\u0430!",
         "",
-        f"📱 {item['name']}",
-        f"💰 {ad_data.get('price', 0):,}\u20bd (\u0440\u044b\u043d\u043e\u043a: {item['market_price']:,}\u20bd)",
-        f"📍 {ad_data.get('city', 'N/A')}",
-        f"🔗 {ad_data.get('url', '')}",
+        f"\U0001f4f1 {item['name']}",
+        f"\U0001f4b0 {ad_data.get('price', 0):,}\u20bd (\u0440\u044b\u043d\u043e\u043a: {item['market_price']:,}\u20bd)",
+        f"\U0001f4cd {ad_data.get('city', 'N/A')}",
+        f"\U0001f517 {ad_data.get('url', '')}",
     ]
 
     if params_str and params_str != "N/A":
-        lines.append(f"\n📝 {params_str}")
+        lines.append(f"\n\U0001f4dd {params_str}")
 
     lines.extend([
         "",
-        f"🤖 \u041e\u0446\u0435\u043d\u043a\u0430 AI ({score}/10):",
+        f"\U0001f916 \u041e\u0446\u0435\u043d\u043a\u0430 AI ({score}/10):",
         f"\u0421\u043e\u0441\u0442\u043e\u044f\u043d\u0438\u0435: {condition_ru}",
         f"\u26a0\ufe0f {comment}",
-        f"💵 \u041f\u0440\u043e\u0444\u0438\u0442: ~{profit:,}\u20bd",
+        f"\U0001f4b5 \u041f\u0440\u043e\u0444\u0438\u0442: ~{profit:,}\u20bd",
     ])
 
     if red_flags:
         flags_str = ", ".join(red_flags)
-        lines.append(f"🚩 \u041a\u0440\u0430\u0441\u043d\u044b\u0435 \u0444\u043b\u0430\u0433\u0438: {flags_str}")
+        lines.append(f"\U0001f6a9 \u041a\u0440\u0430\u0441\u043d\u044b\u0435 \u0444\u043b\u0430\u0433\u0438: {flags_str}")
 
     lines.append(f"\u2705 \u0420\u0435\u043a\u043e\u043c\u0435\u043d\u0434\u0430\u0446\u0438\u044f: {rec_ru}")
 
@@ -71,7 +73,7 @@ def _format_alert(item: dict, ad_data: dict, verdict: dict) -> str:
 
 
 async def run_scan_cycle(bot: Bot) -> None:
-    """Execute one full scan cycle across all active items."""
+    """Execute one full scan cycle using broad keyword queries."""
     monitoring = await get_setting("monitoring_enabled")
     if monitoring != "true":
         logger.debug("Monitoring is disabled, skipping cycle")
@@ -89,25 +91,36 @@ async def run_scan_cycle(bot: Bot) -> None:
 
     chat_id = await get_setting("telegram_chat_id") or config.TELEGRAM_CHAT_ID
 
-    items = await get_active_items()
-    if not items:
-        logger.debug("No active items to scan")
+    search_queries = await get_active_search_queries()
+    if not search_queries:
+        logger.debug("No active search queries to scan")
         await api.close()
         return
 
     total_new = 0
     total_alerts = 0
     total_errors = 0
+    total_matched = 0
 
     try:
-        for item in items:
-            logger.info("Scanning: %s", item["name"])
+        for sq in search_queries:
+            logger.info("Scanning keyword: %s", sq["keyword"])
+
+            # Get all active items linked to this search query
+            items = await get_items_by_search_query(sq["id"])
+            if not items:
+                logger.debug("No active items for keyword '%s', skipping", sq["keyword"])
+                continue
+
+            # Step 1: One broad API query per keyword
             try:
-                listings = await api.search_items(item)
+                listings = await api.search_by_keyword(sq)
             except Exception as e:
-                logger.error("Error searching %s: %s", item["name"], e)
+                logger.error("Error searching keyword '%s': %s", sq["keyword"], e)
                 total_errors += 1
                 continue
+
+            logger.info("Keyword '%s': %d listings found", sq["keyword"], len(listings))
 
             for listing in listings:
                 ad_id = listing["ad_id"]
@@ -117,9 +130,26 @@ async def run_scan_cycle(bot: Bot) -> None:
                     continue
 
                 total_new += 1
+
+                # Step 2: Match listing to a specific item (model + storage)
+                matched_item = match_listing_to_item(
+                    listing["title"],
+                    listing.get("params"),
+                    items,
+                )
+
+                if matched_item is None:
+                    continue
+
+                total_matched += 1
+
+                # Step 3: Check price threshold
+                if listing["price"] > matched_item["threshold_price"]:
+                    continue
+
                 await api.delay()
 
-                # Fetch details
+                # Step 4: Fetch full details only for matched + affordable listings
                 try:
                     details = await api.get_item_details(ad_id)
                 except Exception as e:
@@ -128,10 +158,9 @@ async def run_scan_cycle(bot: Bot) -> None:
                     continue
 
                 if not details:
-                    # Save as seen even without details to avoid re-fetching
                     await save_seen_ad(
                         ad_id=ad_id,
-                        item_id=item["id"],
+                        item_id=matched_item["id"],
                         price=listing.get("price", 0),
                         title=listing.get("title", ""),
                         url=listing.get("url", ""),
@@ -140,7 +169,7 @@ async def run_scan_cycle(bot: Bot) -> None:
                     continue
 
                 # Seller filter
-                max_seller = item.get("max_seller_items", config.MAX_SELLER_ITEMS)
+                max_seller = matched_item.get("max_seller_items", config.MAX_SELLER_ITEMS)
                 if details.get("seller_items_count", 0) > max_seller:
                     logger.debug(
                         "Skipping %s: seller has %d items (max %d)",
@@ -148,7 +177,7 @@ async def run_scan_cycle(bot: Bot) -> None:
                     )
                     await save_seen_ad(
                         ad_id=ad_id,
-                        item_id=item["id"],
+                        item_id=matched_item["id"],
                         price=details.get("price", 0),
                         title=details.get("title", ""),
                         url=details.get("url", ""),
@@ -156,13 +185,13 @@ async def run_scan_cycle(bot: Bot) -> None:
                     )
                     continue
 
-                # AI analysis
-                verdict = await analyze_ad(item, details)
+                # Step 5: AI analysis
+                verdict = await analyze_ad(matched_item, details)
                 if not verdict:
                     total_errors += 1
                     await save_seen_ad(
                         ad_id=ad_id,
-                        item_id=item["id"],
+                        item_id=matched_item["id"],
                         price=details.get("price", 0),
                         title=details.get("title", ""),
                         url=details.get("url", ""),
@@ -175,7 +204,7 @@ async def run_scan_cycle(bot: Bot) -> None:
 
                 await save_seen_ad(
                     ad_id=ad_id,
-                    item_id=item["id"],
+                    item_id=matched_item["id"],
                     price=details.get("price", 0),
                     title=details.get("title", ""),
                     url=details.get("url", ""),
@@ -186,7 +215,7 @@ async def run_scan_cycle(bot: Bot) -> None:
                 )
 
                 if should_alert and chat_id:
-                    alert_text = _format_alert(item, details, verdict)
+                    alert_text = _format_alert(matched_item, details, verdict)
                     ad_url = details.get("url", "")
                     reply_markup = ad_alert_keyboard(ad_url) if ad_url else None
                     try:
@@ -209,8 +238,8 @@ async def run_scan_cycle(bot: Bot) -> None:
         await api.close()
 
     logger.info(
-        "Scan cycle complete: %d new, %d alerts, %d errors",
-        total_new, total_alerts, total_errors,
+        "Scan cycle complete: %d queries, %d new listings, %d matched, %d alerts, %d errors",
+        len(search_queries), total_new, total_matched, total_alerts, total_errors,
     )
 
     # Check if all proxies are dead

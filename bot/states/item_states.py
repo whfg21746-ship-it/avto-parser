@@ -2,9 +2,10 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class AddItemFSM(StatesGroup):
-    choosing_category = State()
+    choosing_search_query = State()
     entering_name = State()
-    entering_avito_params = State()
+    entering_model_pattern = State()
+    entering_storage = State()
     entering_threshold = State()
     entering_market_price = State()
     confirming = State()
@@ -18,6 +19,14 @@ class EditItemFSM(StatesGroup):
 class AddCategoryFSM(StatesGroup):
     entering_name = State()
     entering_avito_id = State()
+
+
+class AddSearchQueryFSM(StatesGroup):
+    choosing_category = State()
+    entering_keyword = State()
+    entering_avito_category_id = State()
+    entering_price_max = State()
+    confirming = State()
 
 
 class SettingsFSM(StatesGroup):
