@@ -66,20 +66,27 @@ class AvitoAPI:
         for attempt in range(3):
             try:
                 async with session.get(
-                    url, params=params, proxy=proxy
+                    url, params=params, proxy=proxy, allow_redirects=False
                 ) as resp:
                     if resp.status == 200:
                         return await resp.json(content_type=None)
                     elif resp.status == 429:
-                        logger.warning("HTTP 429 rate limited, pausing 60s")
+                        delay = 15 * (attempt + 1)
+                        logger.warning(
+                            "HTTP 429 rate limited, pausing %ds (attempt %d/3)",
+                            delay, attempt + 1,
+                        )
                         self.proxy_manager.force_rotate()
                         proxy = self.proxy_manager.get_proxy()
-                        await asyncio.sleep(60)
-                    elif resp.status == 403:
-                        logger.warning("HTTP 403 forbidden, switching proxy")
+                        await asyncio.sleep(delay)
+                    elif resp.status in (301, 302, 403):
+                        logger.warning(
+                            "HTTP %d blocked, switching proxy (attempt %d/3)",
+                            resp.status, attempt + 1,
+                        )
                         self.proxy_manager.force_rotate()
                         proxy = self.proxy_manager.get_proxy()
-                        await asyncio.sleep(30)
+                        await asyncio.sleep(10)
                     else:
                         logger.error(
                             "HTTP %d from %s", resp.status, url

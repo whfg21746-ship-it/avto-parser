@@ -56,7 +56,9 @@ class ParamDiscovery:
 
         for attempt in range(3):
             try:
-                async with session.get(url, params=params, proxy=proxy) as resp:
+                async with session.get(
+                    url, params=params, proxy=proxy, allow_redirects=False
+                ) as resp:
                     if resp.status == 200:
                         return await resp.json(content_type=None)
                     elif resp.status == 429:
@@ -68,8 +70,11 @@ class ParamDiscovery:
                         self.proxy_manager.force_rotate()
                         proxy = self.proxy_manager.get_proxy()
                         await asyncio.sleep(delay)
-                    elif resp.status == 403:
-                        logger.warning("Discovery: HTTP 403, switching proxy")
+                    elif resp.status in (301, 302, 403):
+                        logger.warning(
+                            "Discovery: HTTP %d, switching proxy (attempt %d/3)",
+                            resp.status, attempt + 1,
+                        )
                         self.proxy_manager.force_rotate()
                         proxy = self.proxy_manager.get_proxy()
                         await asyncio.sleep(10)
@@ -93,11 +98,13 @@ class ParamDiscovery:
 
         for attempt in range(3):
             try:
-                async with session.get(url, params=params, proxy=proxy) as resp:
+                async with session.get(
+                    url, params=params, proxy=proxy, allow_redirects=False
+                ) as resp:
                     if resp.status == 200:
                         return await resp.text()
-                    elif resp.status in (429, 403):
-                        delay = 10 if resp.status == 403 else 15 * (attempt + 1)
+                    elif resp.status in (301, 302, 403, 429):
+                        delay = 15 * (attempt + 1) if resp.status == 429 else 10
                         self.proxy_manager.force_rotate()
                         proxy = self.proxy_manager.get_proxy()
                         await asyncio.sleep(delay)
