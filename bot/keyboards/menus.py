@@ -1,18 +1,23 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+ITEMS_PER_PAGE = 10
+
 
 def main_menu(monitoring_active: bool = False) -> InlineKeyboardMarkup:
-    toggle_text = "\u23f8 \u041f\u0430\u0443\u0437\u0430 \u043c\u043e\u043d\u0438\u0442\u043e\u0440\u0438\u043d\u0433\u0430" if monitoring_active else "\u25b6\ufe0f \u0421\u0442\u0430\u0440\u0442 \u043c\u043e\u043d\u0438\u0442\u043e\u0440\u0438\u043d\u0433\u0430"
+    toggle_text = "\u23f8 Пауза мониторинга" if monitoring_active else "\u25b6\ufe0f Старт мониторинга"
     toggle_cb = "monitoring_off" if monitoring_active else "monitoring_on"
 
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📦 \u041c\u043e\u0438 \u0442\u043e\u0432\u0430\u0440\u044b", callback_data="items_list"),
-            InlineKeyboardButton(text="\u2795 \u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0442\u043e\u0432\u0430\u0440", callback_data="item_add"),
+            InlineKeyboardButton(text="📦 Мои товары", callback_data="items_list"),
+            InlineKeyboardButton(text="\u2795 Добавить товар", callback_data="item_add"),
         ],
         [
-            InlineKeyboardButton(text="📁 \u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u0438", callback_data="categories_list"),
-            InlineKeyboardButton(text="\u2699\ufe0f \u041d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438", callback_data="settings"),
+            InlineKeyboardButton(text="📁 Категории", callback_data="categories_list"),
+            InlineKeyboardButton(text="\u2699\ufe0f Настройки", callback_data="settings"),
+        ],
+        [
+            InlineKeyboardButton(text="🔬 Тест API", callback_data="test_api"),
         ],
         [
             InlineKeyboardButton(text=toggle_text, callback_data=toggle_cb),
@@ -21,6 +26,7 @@ def main_menu(monitoring_active: bool = False) -> InlineKeyboardMarkup:
 
 
 def categories_keyboard(categories: list[dict]) -> InlineKeyboardMarkup:
+    """Category picker for the 'Add Item' flow."""
     rows: list[list[InlineKeyboardButton]] = []
     pair: list[InlineKeyboardButton] = []
     for cat in categories:
@@ -34,98 +40,165 @@ def categories_keyboard(categories: list[dict]) -> InlineKeyboardMarkup:
     if pair:
         rows.append(pair)
     rows.append([InlineKeyboardButton(
-        text="\u2795 \u041d\u043e\u0432\u0430\u044f \u043a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f",
+        text="\u2795 Новая категория",
         callback_data="category_add",
     )])
-    rows.append([InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data="back_main")])
+    rows.append([InlineKeyboardButton(text="\u2b05\ufe0f Назад", callback_data="back_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def categories_list_keyboard(categories: list[dict]) -> InlineKeyboardMarkup:
+    """'Категории' screen — shows categories, click opens items inside."""
     rows: list[list[InlineKeyboardButton]] = []
     for cat in categories:
         rows.append([InlineKeyboardButton(
-            text=f"{cat['name']} (ID: {cat['avito_category_id']}) \u2014 {cat['items_count']} \u0442\u043e\u0432.",
-            callback_data=f"cat_view_{cat['id']}",
+            text=f"{cat['name']} ({cat['items_count']} тов.)",
+            callback_data=f"cat_view_{cat['id']}_0",
         )])
     rows.append([InlineKeyboardButton(
-        text="\u2795 \u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u043a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044e",
+        text="\u2795 Добавить категорию",
         callback_data="category_add",
     )])
-    rows.append([InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data="back_main")])
+    rows.append([InlineKeyboardButton(text="\u2b05\ufe0f Назад", callback_data="back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def categories_nav_keyboard(categories: list[dict]) -> InlineKeyboardMarkup:
+    """'Мои товары' screen — shows categories as folders to browse items."""
+    rows: list[list[InlineKeyboardButton]] = []
+    total_items = sum(c["items_count"] for c in categories)
+    active_items = sum(c.get("active_count", 0) for c in categories)
+    for cat in categories:
+        active = cat.get("active_count", 0)
+        rows.append([InlineKeyboardButton(
+            text=f"{cat['name']} — {active}/{cat['items_count']} акт.",
+            callback_data=f"cat_items_{cat['id']}_0",
+        )])
+    rows.append([InlineKeyboardButton(text="\u2b05\ufe0f Назад", callback_data="back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def category_items_keyboard(
+    items: list[dict],
+    category_id: int,
+    page: int,
+    total: int,
+    source: str = "cat_items",
+) -> InlineKeyboardMarkup:
+    """Paginated list of items within a category."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for item in items:
+        status = "\u2705" if item["is_active"] else "\u23f8"
+        text = f"{status} {item['name']} — {item['threshold_price']:,}\u20bd"
+        if len(text) > 60:
+            text = text[:57] + "..."
+        rows.append([InlineKeyboardButton(
+            text=text,
+            callback_data=f"item_view_{item['id']}",
+        )])
+
+    # Pagination controls
+    total_pages = max(1, (total + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(
+            text="\u25c0\ufe0f",
+            callback_data=f"{source}_{category_id}_{page - 1}",
+        ))
+    nav.append(InlineKeyboardButton(
+        text=f"{page + 1}/{total_pages}",
+        callback_data="noop",
+    ))
+    if (page + 1) * ITEMS_PER_PAGE < total:
+        nav.append(InlineKeyboardButton(
+            text="\u25b6\ufe0f",
+            callback_data=f"{source}_{category_id}_{page + 1}",
+        ))
+    if total_pages > 1:
+        rows.append(nav)
+
+    back_cb = "items_list" if source == "cat_items" else "categories_list"
+    rows.append([InlineKeyboardButton(text="\u2b05\ufe0f Назад", callback_data=back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def item_confirm_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="\u2705 \u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u044c", callback_data="item_confirm"),
-            InlineKeyboardButton(text="\u270f\ufe0f \u0418\u0437\u043c\u0435\u043d\u0438\u0442\u044c", callback_data="item_edit_restart"),
-            InlineKeyboardButton(text="\u274c \u041e\u0442\u043c\u0435\u043d\u0430", callback_data="item_cancel"),
+            InlineKeyboardButton(text="\u2705 Подтвердить", callback_data="item_confirm"),
+            InlineKeyboardButton(text="\u270f\ufe0f Изменить", callback_data="item_edit_restart"),
+            InlineKeyboardButton(text="\u274c Отмена", callback_data="item_cancel"),
         ],
     ])
 
 
 def items_list_keyboard(items: list[dict]) -> InlineKeyboardMarkup:
+    """Flat list fallback (used after delete, etc)."""
     rows: list[list[InlineKeyboardButton]] = []
-    for idx, item in enumerate(items, 1):
+    for item in items[:20]:
         status = "\u2705" if item["is_active"] else "\u23f8"
-        suffix = "" if item["is_active"] else " (\u0432\u044b\u043a\u043b)"
-        text = f"{idx}. {status} {item['name']} \u2014 \u043f\u043e\u0440\u043e\u0433: {item['threshold_price']:,}\u20bd{suffix}"
+        text = f"{status} {item['name']} — {item['threshold_price']:,}\u20bd"
+        if len(text) > 60:
+            text = text[:57] + "..."
         rows.append([InlineKeyboardButton(
             text=text,
             callback_data=f"item_view_{item['id']}",
         )])
-    rows.append([InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data="back_main")])
+    rows.append([InlineKeyboardButton(text="\u2b05\ufe0f Назад", callback_data="back_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def item_detail_keyboard(item: dict) -> InlineKeyboardMarkup:
-    toggle_text = "\u23f8 \u0412\u044b\u043a\u043b\u044e\u0447\u0438\u0442\u044c" if item["is_active"] else "\u25b6\ufe0f \u0412\u043a\u043b\u044e\u0447\u0438\u0442\u044c"
+    toggle_text = "\u23f8 Выключить" if item["is_active"] else "\u25b6\ufe0f Включить"
     toggle_cb = f"item_deactivate_{item['id']}" if item["is_active"] else f"item_activate_{item['id']}"
 
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(
-                text="\u270f\ufe0f \u0418\u0437\u043c\u0435\u043d\u0438\u0442\u044c \u043f\u043e\u0440\u043e\u0433",
+                text="\u270f\ufe0f Порог",
                 callback_data=f"item_edit_threshold_{item['id']}",
             ),
             InlineKeyboardButton(
-                text="\u270f\ufe0f \u0418\u0437\u043c\u0435\u043d\u0438\u0442\u044c \u0440\u044b\u043d\u043e\u0447\u043d\u0443\u044e",
+                text="\u270f\ufe0f Рыночная",
                 callback_data=f"item_edit_market_{item['id']}",
             ),
         ],
         [
             InlineKeyboardButton(text=toggle_text, callback_data=toggle_cb),
             InlineKeyboardButton(
-                text="🗑 \u0423\u0434\u0430\u043b\u0438\u0442\u044c",
+                text="🗑 Удалить",
                 callback_data=f"item_delete_{item['id']}",
             ),
         ],
-        [InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data="items_list")],
+        [InlineKeyboardButton(
+            text="\u2b05\ufe0f Назад к категории",
+            callback_data=f"cat_items_{item['category_id']}_0",
+        )],
     ])
 
 
 def settings_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🔄 \u0418\u043d\u0442\u0435\u0440\u0432\u0430\u043b", callback_data="setting_interval"),
-            InlineKeyboardButton(text="📡 \u041f\u0440\u043e\u043a\u0441\u0438", callback_data="setting_proxy"),
-            InlineKeyboardButton(text="👤 \u0424\u0438\u043b\u044c\u0442\u0440 \u043f\u0440\u043e\u0434\u0430\u0432\u0446\u043e\u0432", callback_data="setting_max_seller"),
+            InlineKeyboardButton(text="🔄 Интервал", callback_data="setting_interval"),
+            InlineKeyboardButton(text="📡 Прокси", callback_data="setting_proxy"),
         ],
-        [InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data="back_main")],
+        [
+            InlineKeyboardButton(text="👤 Фильтр продавцов", callback_data="setting_max_seller"),
+        ],
+        [InlineKeyboardButton(text="\u2b05\ufe0f Назад", callback_data="back_main")],
     ])
 
 
 def back_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data="back_main")],
+        [InlineKeyboardButton(text="\u2b05\ufe0f Назад", callback_data="back_main")],
     ])
 
 
 def ad_alert_keyboard(url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔗 \u041e\u0442\u043a\u0440\u044b\u0442\u044c \u043e\u0431\u044a\u044f\u0432\u043b\u0435\u043d\u0438\u0435", url=url)],
+        [InlineKeyboardButton(text="🔗 Открыть объявление", url=url)],
     ])
 
 
@@ -133,9 +206,9 @@ def confirm_delete_keyboard(item_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(
-                text="\u2705 \u0414\u0430, \u0443\u0434\u0430\u043b\u0438\u0442\u044c",
+                text="\u2705 Да, удалить",
                 callback_data=f"item_delete_confirm_{item_id}",
             ),
-            InlineKeyboardButton(text="\u274c \u041e\u0442\u043c\u0435\u043d\u0430", callback_data=f"item_view_{item_id}"),
+            InlineKeyboardButton(text="\u274c Отмена", callback_data=f"item_view_{item_id}"),
         ],
     ])

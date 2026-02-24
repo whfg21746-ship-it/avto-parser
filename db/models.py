@@ -254,6 +254,23 @@ async def set_setting(key: str, value: str) -> None:
         await db.close()
 
 
+async def get_items_by_category(
+    category_id: int, offset: int = 0, limit: int = 10,
+) -> list[dict]:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT i.*, c.name as category_name "
+            "FROM items i LEFT JOIN categories c ON i.category_id = c.id "
+            "WHERE i.category_id = ? ORDER BY i.name LIMIT ? OFFSET ?",
+            (category_id, limit, offset),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
 async def get_items_count_by_category(category_id: int) -> int:
     db = await get_db()
     try:
