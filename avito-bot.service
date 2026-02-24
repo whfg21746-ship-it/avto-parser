@@ -1,0 +1,15 @@
+[Unit]
+Description=Avito Flipper Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/avto-parser
+ExecStart=/root/avto-parser/venv/bin/python3 -m bot
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
