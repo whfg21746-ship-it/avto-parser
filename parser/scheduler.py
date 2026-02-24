@@ -15,60 +15,65 @@ from db.models import (
 import config
 from parser.avito_api import AvitoAPI
 from parser.cookie_provider import CookieProvider
+from parser.filters import should_instant_reject, should_reject_seller
 from parser.model_matcher import match_listing_to_item
 from parser.proxy_manager import ProxyManager
 
 logger = logging.getLogger(__name__)
 
-CONDITION_MAP = {
-    "mint": "\u0438\u0434\u0435\u0430\u043b\u044c\u043d\u043e\u0435",
-    "good": "\u0445\u043e\u0440\u043e\u0448\u0435\u0435",
-    "defects": "\u0441 \u0434\u0435\u0444\u0435\u043a\u0442\u0430\u043c\u0438",
-    "parts_only": "\u043d\u0430 \u0437\u0430\u043f\u0447\u0430\u0441\u0442\u0438",
-}
-
 RECOMMENDATION_MAP = {
-    "BUY": "\u041a\u0423\u041f\u0418\u0422\u042c",
-    "CHECK": "\u041f\u0420\u041e\u0412\u0415\u0420\u0418\u0422\u042c \u041b\u0418\u0427\u041d\u041e",
+    "BUY": "КУПИТЬ",
+    "CHECK": "ПРОВЕРИТЬ ЛИЧНО",
 }
 
 
 def _format_alert(item: dict, ad_data: dict, verdict: dict) -> str:
     """Format the Telegram alert message."""
-    condition_ru = CONDITION_MAP.get(verdict.get("condition", ""), verdict.get("condition", ""))
-    rec_ru = RECOMMENDATION_MAP.get(verdict.get("recommendation", ""), verdict.get("recommendation", ""))
+    rec = verdict.get("recommendation", "CHECK")
+    rec_ru = RECOMMENDATION_MAP.get(rec, rec)
     score = verdict.get("score", "?")
     comment = verdict.get("comment", "")
     profit = verdict.get("estimated_profit", 0)
+    sell_price = verdict.get("estimated_sell_price", item["market_price"])
+    defects = verdict.get("defects", [])
     red_flags = verdict.get("red_flags", [])
 
-    params_str = ad_data.get("params_str", "")
+    ad_price = ad_data.get("price", 0)
+    city = ad_data.get("city", "N/A")
+    url = ad_data.get("url", "")
 
-    lines = [
-        "\U0001f525 \u041d\u043e\u0432\u0430\u044f \u043d\u0430\u0445\u043e\u0434\u043a\u0430!",
-        "",
-        f"\U0001f4f1 {item['name']}",
-        f"\U0001f4b0 {ad_data.get('price', 0):,}\u20bd (\u0440\u044b\u043d\u043e\u043a: {item['market_price']:,}\u20bd)",
-        f"\U0001f4cd {ad_data.get('city', 'N/A')}",
-        f"\U0001f517 {ad_data.get('url', '')}",
-    ]
+    # Header depends on whether there are red flags
+    if red_flags:
+        header = f"\U0001f6a9 {item['name']} за {ad_price:,}₽"
+    else:
+        header = "\U0001f525 Новая находка!"
 
-    if params_str and params_str != "N/A":
-        lines.append(f"\n\U0001f4dd {params_str}")
+    lines = [header, ""]
+
+    if not red_flags:
+        lines.append(f"\U0001f4f1 {item['name']}")
+
+    lines.extend([
+        f"\U0001f4b0 {ad_price:,}₽ → продажа ~{sell_price:,}₽",
+        f"\U0001f4cd {city}",
+        f"\U0001f4b5 Профит: ~{profit:,}₽",
+    ])
 
     lines.extend([
         "",
-        f"\U0001f916 \u041e\u0446\u0435\u043d\u043a\u0430 AI ({score}/10):",
-        f"\u0421\u043e\u0441\u0442\u043e\u044f\u043d\u0438\u0435: {condition_ru}",
-        f"\u26a0\ufe0f {comment}",
-        f"\U0001f4b5 \u041f\u0440\u043e\u0444\u0438\u0442: ~{profit:,}\u20bd",
+        f"\U0001f916 Оценка: {score}/10 — {rec_ru}",
+        comment,
     ])
+
+    if defects:
+        defects_str = ", ".join(defects)
+        lines.extend(["", f"⚠️ Замечено: {defects_str}"])
 
     if red_flags:
         flags_str = ", ".join(red_flags)
-        lines.append(f"\U0001f6a9 \u041a\u0440\u0430\u0441\u043d\u044b\u0435 \u0444\u043b\u0430\u0433\u0438: {flags_str}")
+        lines.extend(["", f"\U0001f6a9 Красные флаги: {flags_str}"])
 
-    lines.append(f"\u2705 \u0420\u0435\u043a\u043e\u043c\u0435\u043d\u0434\u0430\u0446\u0438\u044f: {rec_ru}")
+    lines.extend(["", f"\U0001f517 {url}"])
 
     return "\n".join(lines)
 
@@ -105,6 +110,7 @@ async def run_scan_cycle(bot: Bot) -> None:
     total_alerts = 0
     total_errors = 0
     total_matched = 0
+    total_filtered = 0
 
     try:
         for sq in search_queries:
@@ -129,13 +135,20 @@ async def run_scan_cycle(bot: Bot) -> None:
             for listing in listings:
                 ad_id = listing["ad_id"]
 
-                # Dedup check
+                # (a) Dedup check
                 if await is_ad_seen(ad_id):
                     continue
 
                 total_new += 1
 
-                # Step 2: Match listing to a specific item (model + storage)
+                # (b) Instant-reject patterns in TITLE
+                rejected, reason = should_instant_reject(listing["title"], "")
+                if rejected:
+                    logger.info("[SKIP] ad_id=%s reason=%r", ad_id, reason)
+                    total_filtered += 1
+                    continue
+
+                # (c) Match listing to a specific item (model + storage)
                 raw_item = listing.get("_raw", {})
                 listing_params = api.extract_listing_params(raw_item)
                 matched_item = match_listing_to_item(
@@ -149,11 +162,11 @@ async def run_scan_cycle(bot: Bot) -> None:
 
                 total_matched += 1
 
-                # Step 3: Check price threshold
+                # (d) Check price threshold
                 if listing["price"] > matched_item["threshold_price"]:
                     continue
 
-                # Step 4: Extract full details from search result data
+                # (e) Extract full details from search result data
                 details = api.get_item_details(ad_id, raw_item=raw_item)
 
                 if not details:
@@ -167,14 +180,16 @@ async def run_scan_cycle(bot: Bot) -> None:
                     )
                     continue
 
-                # Seller filter (use closed items count from search results)
+                # (f) Seller filter: type + closed items count
                 max_seller = matched_item.get("max_seller_items", config.MAX_SELLER_ITEMS)
-                seller_closed = details.get("seller_closed_items", 0)
-                if seller_closed > max_seller:
-                    logger.debug(
-                        "Skipping %s: seller has %d closed items (max %d)",
-                        ad_id, seller_closed, max_seller,
-                    )
+                seller_rejected, seller_reason = should_reject_seller(
+                    seller_type=details.get("seller_type", "private"),
+                    seller_closed_items=details.get("seller_closed_items", 0),
+                    max_seller_items=max_seller,
+                )
+                if seller_rejected:
+                    logger.info("[SKIP] ad_id=%s reason=%r", ad_id, seller_reason)
+                    total_filtered += 1
                     await save_seen_ad(
                         ad_id=ad_id,
                         item_id=matched_item["id"],
@@ -185,7 +200,23 @@ async def run_scan_cycle(bot: Bot) -> None:
                     )
                     continue
 
-                # Step 5: AI analysis
+                # (g) Instant-reject patterns in DESCRIPTION
+                description = details.get("description", "")
+                rejected, reason = should_instant_reject(details.get("title", ""), description)
+                if rejected:
+                    logger.info("[SKIP] ad_id=%s reason=%r", ad_id, reason)
+                    total_filtered += 1
+                    await save_seen_ad(
+                        ad_id=ad_id,
+                        item_id=matched_item["id"],
+                        price=details.get("price", 0),
+                        title=details.get("title", ""),
+                        url=details.get("url", ""),
+                        seller_type=details.get("seller_type", "unknown"),
+                    )
+                    continue
+
+                # (h) AI analysis — only after all pre-filters passed
                 verdict = await analyze_ad(matched_item, details)
                 if not verdict:
                     total_errors += 1
@@ -238,8 +269,8 @@ async def run_scan_cycle(bot: Bot) -> None:
         await api.close()
 
     logger.info(
-        "Scan cycle complete: %d queries, %d new listings, %d matched, %d alerts, %d errors",
-        len(search_queries), total_new, total_matched, total_alerts, total_errors,
+        "Scan cycle complete: %d queries, %d new, %d matched, %d filtered, %d alerts, %d errors",
+        len(search_queries), total_new, total_matched, total_filtered, total_alerts, total_errors,
     )
 
     # Check if all proxies are dead
@@ -247,7 +278,7 @@ async def run_scan_cycle(bot: Bot) -> None:
         try:
             await bot.send_message(
                 chat_id=chat_id,
-                text="\u26a0\ufe0f \u0412\u0441\u0435 \u043f\u0440\u043e\u043a\u0441\u0438 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u044b. \u041c\u043e\u043d\u0438\u0442\u043e\u0440\u0438\u043d\u0433 \u043f\u0440\u0438\u043e\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d.",
+                text="⚠️ Все прокси недоступны. Мониторинг приостановлен.",
             )
             from db.models import set_setting
             await set_setting("monitoring_enabled", "false")

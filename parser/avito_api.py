@@ -560,7 +560,6 @@ class AvitoAPI:
             "url": full_url,
             "city": city,
             "seller_type": seller_type,
-            "seller_items_count": 0,
             "seller_closed_items": seller_closed,
             "images": images,
             "params_str": params_str,
