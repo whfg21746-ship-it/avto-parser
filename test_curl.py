@@ -1,10 +1,42 @@
 import asyncio
 import re
 import json
-import html
+from urllib.parse import unquote
 from curl_cffi.requests import AsyncSession
 
 PROXY = "http://cmdkdzgdyfbkpzc226887-country-RU-package-mobile:uzoiutnqjy@eum.proxydoe.com:8000"
+
+
+def find_items_recursive(obj, depth=0, path=""):
+    """Рекурсивно ищем массивы с объявлениями."""
+    if depth > 8:
+        return
+    if isinstance(obj, dict):
+        # Если есть ключ items/listings и это список
+        for key in obj:
+            if key.lower() in ("items", "listings", "adverts", "list", "catalogitems", "results"):
+                val = obj[key]
+                if isinstance(val, list) and len(val) > 0:
+                    print(f"\n  FOUND: {path}.{key} ({len(val)} items)")
+                    # Показываем первый элемент
+                    first = val[0]
+                    if isinstance(first, dict):
+                        print(f"    Keys: {list(first.keys())[:15]}")
+                        # Ищем title/price
+                        for k in ["title", "name", "price", "id", "itemId", "url"]:
+                            if k in first:
+                                print(f"    {k}: {first[k]}")
+                        # Если есть вложенный value
+                        if "value" in first and isinstance(first["value"], dict):
+                            v = first["value"]
+                            print(f"    value.keys: {list(v.keys())[:15]}")
+                            for k in ["title", "name", "price", "id", "itemId", "uri"]:
+                                if k in v:
+                                    print(f"    value.{k}: {v[k]}")
+            find_items_recursive(obj[key], depth + 1, f"{path}.{key}")
+    elif isinstance(obj, list) and len(obj) > 3:
+        for i, item in enumerate(obj[:2]):
+            find_items_recursive(item, depth + 1, f"{path}[{i}]")
 
 
 async def test():
@@ -25,96 +57,50 @@ async def test():
             "Accept-Language": "ru-RU,ru;q=0.9",
         },
     )
-    print(f"Status: {r.status_code}, Length: {len(r.text)}")
+    print(f"Status: {r.status_code}")
     page = r.text
 
-    # 1. Извлекаем window.__preloadedState__
-    print("\n=== window.__preloadedState__ ===")
-    match = re.search(r'window\.__preloadedState__\s*=\s*({.+?});\s*</script>', page, re.DOTALL)
+    # Извлекаем window.__preloadedState__ (URL-encoded)
+    print("\n=== Декодируем __preloadedState__ ===")
+    match = re.search(r'window\.__preloadedState__\s*=\s*"(.*?)";', page, re.DOTALL)
     if match:
-        try:
-            state = json.loads(match.group(1))
-            print(f"Keys: {list(state.keys())[:20]}")
-            # Рекурсивно ищем items/listings
-            state_str = json.dumps(state)
-            if "items" in state_str.lower():
-                print("Contains 'items'!")
-            with open("/root/avto-parser/debug_preloaded.json", "w") as f:
-                json.dump(state, f, ensure_ascii=False, indent=2)
-            print("Saved to debug_preloaded.json")
-        except json.JSONDecodeError as e:
-            print(f"JSON parse error: {e}")
-            raw = match.group(1)[:500]
-            print(f"Raw: {raw}")
-    else:
-        print("Not found as plain JSON, trying encoded...")
-        match2 = re.search(r'window\.__preloadedState__\s*=\s*"(.+?)";\s*</script>', page, re.DOTALL)
-        if match2:
-            raw = match2.group(1)[:200]
-            print(f"Found encoded: {raw}...")
-        else:
-            print("Not found at all")
-
-    # 2. Извлекаем __staticRouterHydrationData
-    print("\n=== __staticRouterHydrationData ===")
-    match = re.search(r'__staticRouterHydrationData\s*=\s*JSON\.parse\("(.+?)"\);\s*</script>', page, re.DOTALL)
-    if match:
-        raw = match.group(1)
-        # Unescape JSON string
-        try:
-            unescaped = raw.replace('\\"', '"').replace('\\\\', '\\')
-            data = json.loads(unescaped)
-            print(f"Keys: {list(data.keys())[:10]}")
-            with open("/root/avto-parser/debug_router.json", "w") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            print("Saved to debug_router.json")
-        except json.JSONDecodeError as e:
-            print(f"Parse error: {e}")
-            print(f"First 300 chars: {raw[:300]}")
-
-    # 3. Извлекаем большой HTML-encoded JSON блок
-    print("\n=== HTML-encoded JSON блоки ===")
-    # Ищем блоки с &quot; которые содержат state/data
-    for match in re.finditer(r'>(\{&quot;.{500,}?})</', page):
         encoded = match.group(1)
-        decoded = html.unescape(encoded)
+        print(f"Encoded length: {len(encoded)} chars")
+
+        decoded = unquote(encoded)
+        print(f"Decoded length: {len(decoded)} chars")
+
         try:
-            data = json.loads(decoded)
-            keys = list(data.keys())[:10]
-            print(f"Found JSON block ({len(decoded)} chars), keys: {keys}")
+            state = json.loads(decoded)
+            top_keys = list(state.keys())
+            print(f"Top-level keys ({len(top_keys)}): {top_keys[:20]}")
 
-            # Ищем items внутри
-            data_str = json.dumps(data)
-            for keyword in ["items", "catalog", "listing", "advert", "offer"]:
-                count = data_str.lower().count(f'"{keyword}')
-                if count > 0:
-                    print(f"  Contains '{keyword}': {count} times")
+            # Сохраняем полный state
+            with open("/root/avto-parser/debug_state.json", "w") as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
+            print("Saved to debug_state.json")
 
-            with open("/root/avto-parser/debug_encoded.json", "w") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            print("  Saved to debug_encoded.json")
-        except json.JSONDecodeError:
-            print(f"Failed to parse block ({len(decoded)} chars)")
-            print(f"  Start: {decoded[:200]}")
+            # Рекурсивно ищем items/listings
+            print("\n=== Поиск объявлений ===")
+            find_items_recursive(state)
 
-    # 4. Ищем все крупные JSON-подобные структуры
-    print("\n=== Все JSON в <script> тегах ===")
-    for match in re.finditer(r'<script[^>]*>(.*?)</script>', page, re.DOTALL):
-        content = match.group(1).strip()
-        if len(content) > 10000:
-            # Пробуем декодировать HTML entities
-            decoded = html.unescape(content)
-            print(f"\nLarge script block: {len(decoded)} chars")
-            print(f"  Start: {decoded[:300]}...")
+            # Также проверяем ключи второго уровня
+            print("\n=== Ключи второго уровня ===")
+            for key in top_keys:
+                if isinstance(state[key], dict):
+                    sub_keys = list(state[key].keys())[:10]
+                    print(f"  {key}: {sub_keys}")
+                elif isinstance(state[key], list):
+                    print(f"  {key}: list ({len(state[key])} items)")
+                else:
+                    val_str = str(state[key])[:80]
+                    print(f"  {key}: {val_str}")
 
-            # Пробуем найти JSON внутри
-            json_match = re.search(r'({["\w].{100,}})', decoded)
-            if json_match:
-                try:
-                    obj = json.loads(json_match.group(1))
-                    print(f"  Parsed JSON! Keys: {list(obj.keys())[:10]}")
-                except json.JSONDecodeError:
-                    pass
+        except json.JSONDecodeError as e:
+            print(f"JSON error: {e}")
+            print(f"First 500 chars: {decoded[:500]}")
+    else:
+        print("__preloadedState__ not found!")
 
     s.close()
 
