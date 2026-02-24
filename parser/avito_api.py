@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import random
+from typing import Any
 
 import aiohttp
 
@@ -9,6 +10,21 @@ import config
 from parser.proxy_manager import ProxyManager
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_price(raw: Any) -> int:
+    """Extract integer price from various Avito response formats."""
+    if isinstance(raw, (int, float)):
+        return int(raw)
+    if isinstance(raw, dict):
+        return int(raw.get("value", raw.get("price", 0)))
+    if isinstance(raw, str):
+        cleaned = raw.replace(" ", "").replace("\u20bd", "").replace("\xa0", "")
+        try:
+            return int(cleaned)
+        except ValueError:
+            return 0
+    return 0
 
 HEADERS = {
     "User-Agent": (
@@ -53,7 +69,7 @@ class AvitoAPI:
                     url, params=params, proxy=proxy
                 ) as resp:
                     if resp.status == 200:
-                        return await resp.json()
+                        return await resp.json(content_type=None)
                     elif resp.status == 429:
                         logger.warning("HTTP 429 rate limited, pausing 60s")
                         self.proxy_manager.force_rotate()
@@ -127,7 +143,7 @@ class AvitoAPI:
             results.append({
                 "ad_id": ad_id,
                 "title": value.get("title", ""),
-                "price": value.get("price", 0),
+                "price": _extract_price(value.get("price", 0)),
                 "url": f"https://www.avito.ru{value.get('uri', '')}",
                 "city": value.get("location", {}).get("name", ""),
             })
@@ -147,7 +163,7 @@ class AvitoAPI:
         result["ad_id"] = ad_id
         result["title"] = data.get("title", "")
         result["description"] = data.get("description", "")
-        result["price"] = data.get("price", 0)
+        result["price"] = _extract_price(data.get("price", 0))
         result["url"] = data.get("url", f"https://www.avito.ru/{ad_id}")
         result["city"] = data.get("location", {}).get("name", "")
 

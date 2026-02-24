@@ -6,13 +6,14 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.keyboards.menus import (
+    back_main_keyboard,
     categories_keyboard,
+    categories_list_keyboard,
     confirm_delete_keyboard,
     item_confirm_keyboard,
     item_detail_keyboard,
     items_list_keyboard,
-    back_main_keyboard,
-    categories_list_keyboard,
+    main_menu,
 )
 from bot.states.item_states import AddCategoryFSM, AddItemFSM, EditItemFSM
 from db.models import (
@@ -26,6 +27,7 @@ from db.models import (
     get_item,
     get_item_stats,
     get_items_count_by_category,
+    get_setting,
     update_item_field,
 )
 
@@ -75,19 +77,44 @@ async def show_item_detail(callback: CallbackQuery) -> None:
 async def activate_item(callback: CallbackQuery) -> None:
     item_id = int(callback.data.split("_")[-1])
     await update_item_field(item_id, "is_active", 1)
+
+    item = await get_item(item_id)
+    if not item:
+        await callback.answer("\u0422\u043e\u0432\u0430\u0440 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+        return
+    stats = await get_item_stats(item_id)
+    text = (
+        f"\ud83d\udce6 {item['name']}\n\n"
+        f"\u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f: {item.get('category_name', 'N/A')}\n"
+        f"\u041f\u043e\u0440\u043e\u0433: {item['threshold_price']:,}\u20bd\n"
+        f"\u0420\u044b\u043d\u043e\u0447\u043d\u0430\u044f: {item['market_price']:,}\u20bd\n"
+        f"\u041d\u0430\u0439\u0434\u0435\u043d\u043e \u043e\u0431\u044a\u044f\u0432\u043b\u0435\u043d\u0438\u0439: {stats['total']}\n"
+        f"\u0410\u043b\u0435\u0440\u0442\u043e\u0432 \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043e: {stats['alerted']}"
+    )
+    await callback.message.edit_text(text, reply_markup=item_detail_keyboard(item))
     await callback.answer("\u25b6\ufe0f \u0422\u043e\u0432\u0430\u0440 \u0432\u043a\u043b\u044e\u0447\u0451\u043d")
-    # Refresh detail view
-    callback.data = f"item_view_{item_id}"
-    await show_item_detail(callback)
 
 
 @router.callback_query(F.data.startswith("item_deactivate_"))
 async def deactivate_item(callback: CallbackQuery) -> None:
     item_id = int(callback.data.split("_")[-1])
     await update_item_field(item_id, "is_active", 0)
+
+    item = await get_item(item_id)
+    if not item:
+        await callback.answer("\u0422\u043e\u0432\u0430\u0440 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+        return
+    stats = await get_item_stats(item_id)
+    text = (
+        f"\ud83d\udce6 {item['name']}\n\n"
+        f"\u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f: {item.get('category_name', 'N/A')}\n"
+        f"\u041f\u043e\u0440\u043e\u0433: {item['threshold_price']:,}\u20bd\n"
+        f"\u0420\u044b\u043d\u043e\u0447\u043d\u0430\u044f: {item['market_price']:,}\u20bd\n"
+        f"\u041d\u0430\u0439\u0434\u0435\u043d\u043e \u043e\u0431\u044a\u044f\u0432\u043b\u0435\u043d\u0438\u0439: {stats['total']}\n"
+        f"\u0410\u043b\u0435\u0440\u0442\u043e\u0432 \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043e: {stats['alerted']}"
+    )
+    await callback.message.edit_text(text, reply_markup=item_detail_keyboard(item))
     await callback.answer("\u23f8 \u0422\u043e\u0432\u0430\u0440 \u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d")
-    callback.data = f"item_view_{item_id}"
-    await show_item_detail(callback)
 
 
 # --- Delete Item ---
@@ -111,9 +138,14 @@ async def confirm_delete(callback: CallbackQuery) -> None:
 async def do_delete_item(callback: CallbackQuery) -> None:
     item_id = int(callback.data.split("_")[-1])
     await delete_item(item_id)
+
+    items = await get_all_items()
+    active_count = sum(1 for i in items if i["is_active"])
+    text = f"\ud83d\udce6 \u041c\u043e\u0438 \u0442\u043e\u0432\u0430\u0440\u044b ({active_count} \u0430\u043a\u0442\u0438\u0432\u043d\u044b\u0445):"
+    if not items:
+        text += "\n\n\u041f\u043e\u043a\u0430 \u043d\u0435\u0442 \u0442\u043e\u0432\u0430\u0440\u043e\u0432. \u0414\u043e\u0431\u0430\u0432\u044c\u0442\u0435 \u043f\u0435\u0440\u0432\u044b\u0439!"
+    await callback.message.edit_text(text, reply_markup=items_list_keyboard(items))
     await callback.answer("\ud83d\uddd1 \u0422\u043e\u0432\u0430\u0440 \u0443\u0434\u0430\u043b\u0451\u043d")
-    callback.data = "items_list"
-    await show_items_list(callback)
 
 
 # --- Edit Threshold ---
@@ -325,11 +357,13 @@ async def restart_add_item(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "item_cancel")
 async def cancel_add_item(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
+    monitoring = await get_setting("monitoring_enabled")
+    is_active = monitoring == "true"
+    await callback.message.edit_text(
+        "\ud83d\udd0d Avito Flipper Bot",
+        reply_markup=main_menu(is_active),
+    )
     await callback.answer("\u274c \u041e\u0442\u043c\u0435\u043d\u0435\u043d\u043e")
-    # Return to main
-    from bot.handlers.start import back_to_main
-    callback.data = "back_main"
-    await back_to_main(callback)
 
 
 # --- Categories Management ---

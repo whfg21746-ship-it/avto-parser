@@ -39,7 +39,6 @@ def _format_alert(item: dict, ad_data: dict, verdict: dict) -> str:
     profit = verdict.get("estimated_profit", 0)
     red_flags = verdict.get("red_flags", [])
 
-    # Build description snippet from params
     params_str = ad_data.get("params_str", "")
 
     lines = [
@@ -49,14 +48,18 @@ def _format_alert(item: dict, ad_data: dict, verdict: dict) -> str:
         f"\ud83d\udcb0 {ad_data.get('price', 0):,}\u20bd (\u0440\u044b\u043d\u043e\u043a: {item['market_price']:,}\u20bd)",
         f"\ud83d\udccd {ad_data.get('city', 'N/A')}",
         f"\ud83d\udd17 {ad_data.get('url', '')}",
-        "",
-        f"\ud83d\udcdd {params_str}" if params_str and params_str != "N/A" else "",
+    ]
+
+    if params_str and params_str != "N/A":
+        lines.append(f"\n\ud83d\udcdd {params_str}")
+
+    lines.extend([
         "",
         f"\ud83e\udd16 \u041e\u0446\u0435\u043d\u043a\u0430 AI ({score}/10):",
         f"\u0421\u043e\u0441\u0442\u043e\u044f\u043d\u0438\u0435: {condition_ru}",
         f"\u26a0\ufe0f {comment}",
         f"\ud83d\udcb5 \u041f\u0440\u043e\u0444\u0438\u0442: ~{profit:,}\u20bd",
-    ]
+    ])
 
     if red_flags:
         flags_str = ", ".join(red_flags)
@@ -64,8 +67,7 @@ def _format_alert(item: dict, ad_data: dict, verdict: dict) -> str:
 
     lines.append(f"\u2705 \u0420\u0435\u043a\u043e\u043c\u0435\u043d\u0434\u0430\u0446\u0438\u044f: {rec_ru}")
 
-    # Filter out empty lines that would create double blanks
-    return "\n".join(line for line in lines if line is not None)
+    return "\n".join(lines)
 
 
 async def run_scan_cycle(bot: Bot) -> None:
@@ -185,11 +187,13 @@ async def run_scan_cycle(bot: Bot) -> None:
 
                 if should_alert and chat_id:
                     alert_text = _format_alert(item, details, verdict)
+                    ad_url = details.get("url", "")
+                    reply_markup = ad_alert_keyboard(ad_url) if ad_url else None
                     try:
                         await bot.send_message(
                             chat_id=chat_id,
                             text=alert_text,
-                            reply_markup=ad_alert_keyboard(details.get("url", "")),
+                            reply_markup=reply_markup,
                             disable_web_page_preview=True,
                         )
                         total_alerts += 1

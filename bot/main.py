@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import signal
 import sys
 
 from aiogram import Bot, Dispatcher
@@ -63,16 +62,7 @@ async def main() -> None:
     scheduler.start()
     logger.info("Scheduler started with interval %d seconds", interval)
 
-    # Graceful shutdown
-    shutdown_event = asyncio.Event()
-
-    def _signal_handler(*_: object) -> None:
-        logger.info("Shutdown signal received")
-        shutdown_event.set()
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        signal.signal(sig, _signal_handler)
-
+    # aiogram 3.x handles SIGINT/SIGTERM gracefully on its own
     try:
         logger.info("Bot starting...")
         await dp.start_polling(bot, close_bot_session=False)
