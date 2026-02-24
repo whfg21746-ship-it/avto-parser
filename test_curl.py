@@ -7,36 +7,39 @@ from curl_cffi.requests import AsyncSession
 PROXY = "http://cmdkdzgdyfbkpzc226887-country-RU-package-mobile:uzoiutnqjy@eum.proxydoe.com:8000"
 
 
-def find_items_recursive(obj, depth=0, path=""):
-    """Рекурсивно ищем массивы с объявлениями."""
-    if depth > 8:
+def deep_explore(obj, path="root", depth=0, max_depth=6):
+    """Рекурсивно показываем структуру JSON."""
+    if depth > max_depth:
         return
     if isinstance(obj, dict):
-        # Если есть ключ items/listings и это список
-        for key in obj:
-            if key.lower() in ("items", "listings", "adverts", "list", "catalogitems", "results"):
-                val = obj[key]
-                if isinstance(val, list) and len(val) > 0:
-                    print(f"\n  FOUND: {path}.{key} ({len(val)} items)")
-                    # Показываем первый элемент
-                    first = val[0]
-                    if isinstance(first, dict):
-                        print(f"    Keys: {list(first.keys())[:15]}")
-                        # Ищем title/price
-                        for k in ["title", "name", "price", "id", "itemId", "url"]:
-                            if k in first:
-                                print(f"    {k}: {first[k]}")
-                        # Если есть вложенный value
-                        if "value" in first and isinstance(first["value"], dict):
-                            v = first["value"]
-                            print(f"    value.keys: {list(v.keys())[:15]}")
-                            for k in ["title", "name", "price", "id", "itemId", "uri"]:
-                                if k in v:
-                                    print(f"    value.{k}: {v[k]}")
-            find_items_recursive(obj[key], depth + 1, f"{path}.{key}")
-    elif isinstance(obj, list) and len(obj) > 3:
-        for i, item in enumerate(obj[:2]):
-            find_items_recursive(item, depth + 1, f"{path}[{i}]")
+        for key in list(obj.keys())[:30]:
+            val = obj[key]
+            if isinstance(val, dict):
+                size = len(json.dumps(val))
+                print(f"{'  ' * depth}{path}.{key}: dict({len(val)} keys, {size} bytes)")
+                if size > 500:
+                    deep_explore(val, f"{path}.{key}", depth + 1, max_depth)
+            elif isinstance(val, list):
+                print(f"{'  ' * depth}{path}.{key}: list({len(val)} items)")
+                if len(val) > 0 and isinstance(val[0], dict):
+                    print(f"{'  ' * (depth + 1)}[0] keys: {list(val[0].keys())[:15]}")
+                    for k in ["title", "name", "price", "id", "itemId", "url", "uri", "type"]:
+                        if k in val[0]:
+                            print(f"{'  ' * (depth + 1)}[0].{k}: {str(val[0][k])[:100]}")
+                if size_of_list(val) > 500:
+                    deep_explore(val[0] if val and isinstance(val[0], dict) else {}, f"{path}.{key}[0]", depth + 1, max_depth)
+            elif isinstance(val, str) and len(val) > 200:
+                print(f"{'  ' * depth}{path}.{key}: str({len(val)} chars) = {val[:100]}...")
+            else:
+                val_str = str(val)[:100]
+                print(f"{'  ' * depth}{path}.{key}: {val_str}")
+
+
+def size_of_list(lst):
+    try:
+        return len(json.dumps(lst))
+    except Exception:
+        return 0
 
 
 async def test():
@@ -60,47 +63,51 @@ async def test():
     print(f"Status: {r.status_code}")
     page = r.text
 
-    # Извлекаем window.__preloadedState__ (URL-encoded)
-    print("\n=== Декодируем __preloadedState__ ===")
-    match = re.search(r'window\.__preloadedState__\s*=\s*"(.*?)";', page, re.DOTALL)
+    # 1. __staticRouterHydrationData
+    print("\n=== __staticRouterHydrationData ===")
+    match = re.search(r'__staticRouterHydrationData\s*=\s*JSON\.parse\("(.+?)"\);\s*</script>', page, re.DOTALL)
     if match:
-        encoded = match.group(1)
-        print(f"Encoded length: {len(encoded)} chars")
-
-        decoded = unquote(encoded)
-        print(f"Decoded length: {len(decoded)} chars")
-
+        raw = match.group(1)
+        unescaped = raw.replace('\\"', '"').replace('\\\\', '\\')
         try:
-            state = json.loads(decoded)
-            top_keys = list(state.keys())
-            print(f"Top-level keys ({len(top_keys)}): {top_keys[:20]}")
-
-            # Сохраняем полный state
-            with open("/root/avto-parser/debug_state.json", "w") as f:
-                json.dump(state, f, ensure_ascii=False, indent=2)
-            print("Saved to debug_state.json")
-
-            # Рекурсивно ищем items/listings
-            print("\n=== Поиск объявлений ===")
-            find_items_recursive(state)
-
-            # Также проверяем ключи второго уровня
-            print("\n=== Ключи второго уровня ===")
-            for key in top_keys:
-                if isinstance(state[key], dict):
-                    sub_keys = list(state[key].keys())[:10]
-                    print(f"  {key}: {sub_keys}")
-                elif isinstance(state[key], list):
-                    print(f"  {key}: list ({len(state[key])} items)")
-                else:
-                    val_str = str(state[key])[:80]
-                    print(f"  {key}: {val_str}")
-
+            data = json.loads(unescaped)
+            print("Exploring structure:")
+            deep_explore(data, "router", 0, 5)
+            with open("/root/avto-parser/debug_router.json", "w") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            print("\nSaved to debug_router.json")
         except json.JSONDecodeError as e:
-            print(f"JSON error: {e}")
-            print(f"First 500 chars: {decoded[:500]}")
+            print(f"Parse error: {e}")
     else:
-        print("__preloadedState__ not found!")
+        print("Not found!")
+
+    # 2. window.__mfe__ (тоже URL-encoded)
+    print("\n=== window.__mfe__ ===")
+    match = re.search(r'window\.__mfe__\s*=\s*"(.*?)";', page)
+    if match:
+        decoded = unquote(match.group(1))
+        try:
+            mfe = json.loads(decoded)
+            print(f"Keys: {list(mfe.keys())[:20]}")
+            deep_explore(mfe, "mfe", 0, 3)
+        except json.JSONDecodeError:
+            print(f"Not JSON, length: {len(decoded)}")
+    else:
+        print("Not found!")
+
+    # 3. Ищем внутренний API endpoint в JS коде
+    print("\n=== API endpoints в JS ===")
+    api_patterns = [
+        r'["\'](/api/\d+/[^"\']+)["\']',
+        r'["\']https?://[^"\']*avito[^"\']*api[^"\']+["\']',
+        r'fetch\(["\']([^"\']+)["\']',
+    ]
+    found_apis = set()
+    for pattern in api_patterns:
+        for m in re.finditer(pattern, page):
+            found_apis.add(m.group(1) if m.lastindex else m.group(0))
+    for api in sorted(found_apis)[:20]:
+        print(f"  {api}")
 
     s.close()
 
