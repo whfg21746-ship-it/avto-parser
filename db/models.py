@@ -1,0 +1,267 @@
+import json
+import logging
+from typing import Any
+
+from db.database import get_db
+
+logger = logging.getLogger(__name__)
+
+
+# --- Categories ---
+
+async def get_all_categories() -> list[dict]:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT * FROM categories ORDER BY name"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+async def get_active_categories() -> list[dict]:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT * FROM categories WHERE is_active = 1 ORDER BY name"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+async def get_category(category_id: int) -> dict | None:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT * FROM categories WHERE id = ?", (category_id,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        await db.close()
+
+
+async def add_category(name: str, avito_category_id: int) -> int:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "INSERT INTO categories (name, avito_category_id) VALUES (?, ?)",
+            (name, avito_category_id),
+        )
+        await db.commit()
+        return cursor.lastrowid
+    finally:
+        await db.close()
+
+
+async def delete_category(category_id: int) -> None:
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM categories WHERE id = ?", (category_id,))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+# --- Items ---
+
+async def get_all_items() -> list[dict]:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT i.*, c.name as category_name "
+            "FROM items i LEFT JOIN categories c ON i.category_id = c.id "
+            "ORDER BY i.name"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+async def get_active_items() -> list[dict]:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT i.*, c.name as category_name, c.avito_category_id "
+            "FROM items i JOIN categories c ON i.category_id = c.id "
+            "WHERE i.is_active = 1 AND c.is_active = 1 "
+            "ORDER BY i.name"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+async def get_item(item_id: int) -> dict | None:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT i.*, c.name as category_name "
+            "FROM items i LEFT JOIN categories c ON i.category_id = c.id "
+            "WHERE i.id = ?",
+            (item_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        await db.close()
+
+
+async def add_item(
+    category_id: int,
+    name: str,
+    threshold_price: int,
+    market_price: int,
+    search_query: str | None = None,
+    avito_params: str | None = None,
+    max_seller_items: int = 10,
+) -> int:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "INSERT INTO items (category_id, name, search_query, avito_params, "
+            "threshold_price, market_price, max_seller_items) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (category_id, name, search_query, avito_params or "{}",
+             threshold_price, market_price, max_seller_items),
+        )
+        await db.commit()
+        return cursor.lastrowid
+    finally:
+        await db.close()
+
+
+async def update_item_field(item_id: int, field: str, value: Any) -> None:
+    allowed = {"threshold_price", "market_price", "is_active", "name",
+               "search_query", "avito_params", "max_seller_items"}
+    if field not in allowed:
+        raise ValueError(f"Field {field} is not allowed for update")
+    db = await get_db()
+    try:
+        await db.execute(
+            f"UPDATE items SET {field} = ? WHERE id = ?",  # noqa: S608
+            (value, item_id),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def delete_item(item_id: int) -> None:
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM seen_ads WHERE item_id = ?", (item_id,))
+        await db.execute("DELETE FROM items WHERE id = ?", (item_id,))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+# --- Seen Ads ---
+
+async def is_ad_seen(ad_id: str) -> bool:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT 1 FROM seen_ads WHERE ad_id = ?", (ad_id,)
+        )
+        row = await cursor.fetchone()
+        return row is not None
+    finally:
+        await db.close()
+
+
+async def save_seen_ad(
+    ad_id: str,
+    item_id: int,
+    price: int,
+    title: str,
+    url: str,
+    seller_type: str,
+    ai_verdict: dict | None = None,
+    profit_estimate: int | None = None,
+    was_alerted: bool = False,
+) -> None:
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT OR IGNORE INTO seen_ads "
+            "(ad_id, item_id, price, title, url, seller_type, "
+            "ai_verdict, profit_estimate, was_alerted) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                ad_id, item_id, price, title, url, seller_type,
+                json.dumps(ai_verdict, ensure_ascii=False) if ai_verdict else None,
+                profit_estimate,
+                1 if was_alerted else 0,
+            ),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def get_item_stats(item_id: int) -> dict:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT COUNT(*) as total FROM seen_ads WHERE item_id = ?",
+            (item_id,),
+        )
+        total = (await cursor.fetchone())[0]
+
+        cursor = await db.execute(
+            "SELECT COUNT(*) as alerted FROM seen_ads "
+            "WHERE item_id = ? AND was_alerted = 1",
+            (item_id,),
+        )
+        alerted = (await cursor.fetchone())[0]
+
+        return {"total": total, "alerted": alerted}
+    finally:
+        await db.close()
+
+
+# --- Settings ---
+
+async def get_setting(key: str) -> str | None:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else None
+    finally:
+        await db.close()
+
+
+async def set_setting(key: str, value: str) -> None:
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def get_items_count_by_category(category_id: int) -> int:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM items WHERE category_id = ?",
+            (category_id,),
+        )
+        row = await cursor.fetchone()
+        return row[0]
+    finally:
+        await db.close()
