@@ -131,15 +131,16 @@ async def get_search_query(query_id: int) -> dict | None:
 async def add_search_query(
     category_id: int,
     keyword: str,
+    avito_url: str | None = None,
     avito_category_id: int | None = None,
     price_max: int | None = None,
 ) -> int:
     db = await get_db()
     try:
         cursor = await db.execute(
-            "INSERT INTO search_queries (category_id, keyword, avito_category_id, price_max) "
-            "VALUES (?, ?, ?, ?)",
-            (category_id, keyword, avito_category_id, price_max),
+            "INSERT INTO search_queries (category_id, keyword, avito_url, avito_category_id, price_max) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (category_id, keyword, avito_url, avito_category_id, price_max),
         )
         await db.commit()
         return cursor.lastrowid
@@ -148,7 +149,7 @@ async def add_search_query(
 
 
 async def update_search_query_field(query_id: int, field: str, value: Any) -> None:
-    allowed = {"keyword", "avito_category_id", "price_max", "is_active", "category_id"}
+    allowed = {"keyword", "avito_url", "avito_category_id", "price_max", "is_active", "category_id"}
     if field not in allowed:
         raise ValueError(f"Field {field} is not allowed for update")
     db = await get_db()

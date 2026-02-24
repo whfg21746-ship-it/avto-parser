@@ -1,7 +1,10 @@
 """Avito parameter auto-discovery module.
 
-Discovers the correct categoryId and params[N]=value filters
-for product models by querying Avito's search API and web parsing.
+DEPRECATED: This module used the old mobile API (m.avito.ru/api/9/items)
+which is now dead. The new web-scraping approach in avito_api.py uses
+full Avito URLs instead of categoryId + params discovery.
+
+Kept for reference only.
 """
 
 import asyncio

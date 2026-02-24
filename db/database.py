@@ -18,11 +18,11 @@ INITIAL_CATEGORIES = [
 ]
 
 INITIAL_SEARCH_QUERIES = [
-    {"keyword": "iphone", "category_id": 1, "avito_category_id": 84, "price_max": 150000},
-    {"keyword": "macbook", "category_id": 2, "avito_category_id": None, "price_max": 250000},
-    {"keyword": "airpods", "category_id": 3, "avito_category_id": None, "price_max": 50000},
-    {"keyword": "ipad", "category_id": 4, "avito_category_id": None, "price_max": 150000},
-    {"keyword": "apple watch", "category_id": 1, "avito_category_id": None, "price_max": 80000},
+    {"keyword": "iphone", "category_id": 1, "avito_url": "https://www.avito.ru/all/telefony/mobilnye_telefony/apple-ASgBAgICA0SywA2I_Dc?cd=1&s=104", "price_max": 150000},
+    {"keyword": "macbook", "category_id": 2, "avito_url": "https://www.avito.ru/all/noutbuki/apple-ASgBAgICA0Tq0A3OqzmI_Dc?cd=1&s=104", "price_max": 250000},
+    {"keyword": "airpods", "category_id": 3, "avito_url": None, "price_max": 50000},
+    {"keyword": "ipad", "category_id": 4, "avito_url": "https://www.avito.ru/all/planshety_i_elektronnye_knigi/apple-ASgBAgICA0TIzg3OqzmI_Dc?cd=1&s=104", "price_max": 150000},
+    {"keyword": "apple watch", "category_id": 1, "avito_url": None, "price_max": 80000},
 ]
 
 INITIAL_SETTINGS = {
@@ -186,15 +186,22 @@ async def init_db() -> None:
                 )
             logger.info("Seeded %d initial categories", len(INITIAL_CATEGORIES))
 
+        # Ensure avito_url column exists (migration for existing DBs)
+        cursor = await db.execute("PRAGMA table_info(search_queries)")
+        sq_columns = {row[1] for row in await cursor.fetchall()}
+        if "avito_url" not in sq_columns:
+            await db.execute("ALTER TABLE search_queries ADD COLUMN avito_url TEXT")
+            logger.info("Added avito_url column to search_queries")
+
         # Seed search queries if table is empty
         cursor = await db.execute("SELECT COUNT(*) FROM search_queries")
         row = await cursor.fetchone()
         if row[0] == 0:
             for sq in INITIAL_SEARCH_QUERIES:
                 await db.execute(
-                    "INSERT INTO search_queries (keyword, category_id, avito_category_id, price_max) "
+                    "INSERT INTO search_queries (keyword, category_id, avito_url, price_max) "
                     "VALUES (?, ?, ?, ?)",
-                    (sq["keyword"], sq["category_id"], sq["avito_category_id"], sq["price_max"]),
+                    (sq["keyword"], sq["category_id"], sq["avito_url"], sq["price_max"]),
                 )
             logger.info("Seeded %d initial search queries", len(INITIAL_SEARCH_QUERIES))
 

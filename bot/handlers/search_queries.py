@@ -1,4 +1,5 @@
 import logging
+from urllib.parse import urlparse
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
@@ -29,6 +30,15 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
+def _is_avito_url(text: str) -> bool:
+    """Check if the text looks like an Avito URL."""
+    try:
+        parsed = urlparse(text.strip())
+        return parsed.scheme in ("http", "https") and "avito.ru" in (parsed.netloc or "")
+    except Exception:
+        return False
+
+
 # --- Search Queries List ---
 
 @router.callback_query(F.data == "search_queries_list")
@@ -43,7 +53,7 @@ async def show_search_queries(callback: CallbackQuery) -> None:
     text = (
         f"\U0001f50d Поисковые запросы ({active}/{len(queries)} активных)\n"
         f"Всего моделей: {total}\n\n"
-        "Каждый запрос — одно обращение к Avito API."
+        "Каждый запрос — одно обращение к Avito."
     )
     await callback.message.edit_text(
         text, reply_markup=search_queries_list_keyboard(queries)
@@ -64,14 +74,16 @@ async def show_sq_detail(callback: CallbackQuery) -> None:
     items_count = await get_items_count_by_search_query(query_id)
     status = "\u2705 Активен" if sq["is_active"] else "\u23f8 Выключен"
     cat_name = sq.get("category_name", "N/A")
-    avito_cat = sq.get("avito_category_id") or "не задан"
     price_max = f"{sq['price_max']:,}\u20bd" if sq.get("price_max") else "не задан"
+
+    avito_url = sq.get("avito_url")
+    source = f"URL: {avito_url}" if avito_url else f"Ключевое слово: {sq['keyword']}"
 
     text = (
         f'\U0001f50d Запрос: "{sq["keyword"]}"\n\n'
         f"Статус: {status}\n"
         f"Категория: {cat_name}\n"
-        f"Avito categoryId: {avito_cat}\n"
+        f"{source}\n"
         f"Макс. цена: {price_max}\n"
         f"Моделей: {items_count}"
     )
@@ -186,38 +198,53 @@ async def sq_category_chosen(callback: CallbackQuery, state: FSMContext) -> None
     )
     await state.set_state(AddSearchQueryFSM.entering_keyword)
     await callback.message.edit_text(
-        'Введи ключевое слово для поиска (например: "iphone", "macbook", "airpods"):',
+        "Введи ключевое слово ИЛИ вставь ссылку с Avito:\n\n"
+        'Ключевое слово: "iphone", "macbook"\n'
+        "Ссылка: https://www.avito.ru/all/telefony/...\n\n"
+        "Совет: зайди на avito.ru, настрой фильтры и скопируй URL из адресной строки.",
     )
     await callback.answer()
 
 
 @router.message(AddSearchQueryFSM.entering_keyword)
 async def sq_keyword_entered(message: Message, state: FSMContext) -> None:
-    keyword = message.text.strip().lower()
-    if not keyword:
-        await message.answer("Ключевое слово не может быть пустым:")
+    raw = message.text.strip()
+    if not raw:
+        await message.answer("Ввод не может быть пустым:")
         return
-    await state.update_data(sq_keyword=keyword)
-    await state.set_state(AddSearchQueryFSM.entering_avito_category_id)
-    await message.answer(
-        "Введи Avito categoryId (число) или отправь 0 для автоопределения:\n\n"
-        "Примеры: 84 (телефоны), 17 (ноутбуки), 31 (наушники), 137 (планшеты)"
-    )
 
+    if _is_avito_url(raw):
+        # User pasted an Avito URL — extract keyword from URL for display
+        parsed = urlparse(raw)
+        path_parts = [p for p in parsed.path.split("/") if p and p != "all"]
+        keyword = path_parts[-1] if path_parts else "avito"
+        # Clean up keyword: replace underscores/dashes, take last segment
+        keyword = keyword.split("-")[0].replace("_", " ")
 
-@router.message(AddSearchQueryFSM.entering_avito_category_id)
-async def sq_avito_cat_entered(message: Message, state: FSMContext) -> None:
-    try:
-        avito_cat = int(message.text.strip())
-    except (ValueError, AttributeError):
-        await message.answer("Введи число:")
-        return
-    await state.update_data(sq_avito_category_id=avito_cat if avito_cat > 0 else None)
-    await state.set_state(AddSearchQueryFSM.entering_price_max)
-    await message.answer(
-        "Введи максимальную цену для поискового запроса (в \u20bd).\n"
-        "Это потолок цены в API-запросе (ставь с запасом выше самого дорогого товара):"
-    )
+        await state.update_data(
+            sq_keyword=keyword,
+            sq_avito_url=raw,
+            sq_price_max=None,
+        )
+        # Skip price_max step — URL already contains all filters
+        await state.set_state(AddSearchQueryFSM.confirming)
+        data = await state.get_data()
+        text = (
+            f"\U0001f50d Новый поисковый запрос:\n\n"
+            f'Название: "{keyword}"\n'
+            f"Категория: {data['sq_category_name']}\n"
+            f"URL: {raw}\n"
+        )
+        await message.answer(text, reply_markup=search_query_confirm_keyboard())
+    else:
+        # Plain keyword
+        keyword = raw.lower()
+        await state.update_data(sq_keyword=keyword, sq_avito_url=None)
+        await state.set_state(AddSearchQueryFSM.entering_price_max)
+        await message.answer(
+            "Введи максимальную цену для поискового запроса (в \u20bd).\n"
+            "Это потолок цены в поисковой выдаче (ставь с запасом):"
+        )
 
 
 @router.message(AddSearchQueryFSM.entering_price_max)
@@ -231,12 +258,10 @@ async def sq_price_max_entered(message: Message, state: FSMContext) -> None:
     await state.set_state(AddSearchQueryFSM.confirming)
 
     data = await state.get_data()
-    avito_cat = data.get("sq_avito_category_id") or "авто"
     text = (
         f"\U0001f50d Новый поисковый запрос:\n\n"
         f'Ключевое слово: "{data["sq_keyword"]}"\n'
         f"Категория: {data['sq_category_name']}\n"
-        f"Avito categoryId: {avito_cat}\n"
         f"Макс. цена: {data['sq_price_max']:,}\u20bd"
     )
     await message.answer(text, reply_markup=search_query_confirm_keyboard())
@@ -248,7 +273,7 @@ async def confirm_add_sq(callback: CallbackQuery, state: FSMContext) -> None:
     await add_search_query(
         category_id=data["sq_category_id"],
         keyword=data["sq_keyword"],
-        avito_category_id=data.get("sq_avito_category_id"),
+        avito_url=data.get("sq_avito_url"),
         price_max=data.get("sq_price_max"),
     )
     await state.clear()

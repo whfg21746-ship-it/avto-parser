@@ -23,8 +23,7 @@ class AddCategoryFSM(StatesGroup):
 
 class AddSearchQueryFSM(StatesGroup):
     choosing_category = State()
-    entering_keyword = State()
-    entering_avito_category_id = State()
+    entering_keyword = State()  # Accepts keyword or full Avito URL
     entering_price_max = State()
     confirming = State()
 

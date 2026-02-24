@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS search_queries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     category_id INTEGER REFERENCES categories(id),
     keyword TEXT NOT NULL,
+    avito_url TEXT,
     avito_category_id INTEGER,
     price_max INTEGER,
     is_active BOOLEAN DEFAULT 1,

@@ -3,7 +3,6 @@ import logging
 
 from aiogram import Bot
 
-import config
 from ai.analyzer import analyze_ad
 from bot.keyboards.menus import ad_alert_keyboard
 from db.models import (
@@ -13,6 +12,7 @@ from db.models import (
     is_ad_seen,
     save_seen_ad,
 )
+import config
 from parser.avito_api import AvitoAPI
 from parser.model_matcher import match_listing_to_item
 from parser.proxy_manager import ProxyManager
@@ -151,7 +151,7 @@ async def run_scan_cycle(bot: Bot) -> None:
 
                 # Step 4: Fetch full details only for matched + affordable listings
                 try:
-                    details = await api.get_item_details(ad_id)
+                    details = await api.get_item_details(ad_id, url=listing.get("url", ""))
                 except Exception as e:
                     logger.error("Error fetching details for %s: %s", ad_id, e)
                     total_errors += 1
