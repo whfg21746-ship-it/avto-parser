@@ -290,6 +290,56 @@ class AvitoAPI:
     # Public API
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _get_embedded_redirect(data: dict) -> str | None:
+        """Check if the embedded JSON contains a suspense redirect.
+
+        Avito often redirects keyword searches to specific category URLs
+        via a client-side redirect embedded in the JSON data (status 301).
+        """
+        # Check state.redirect (top-level redirect URL)
+        redirect = data.get("redirect")
+        if redirect and isinstance(redirect, str) and redirect.startswith("/"):
+            return redirect
+
+        # Check state.data.url (redirect target in data section)
+        inner = data.get("data", {})
+        if isinstance(inner, dict):
+            status = inner.get("status", {})
+            if isinstance(status, dict) and status.get("code") in (301, 302):
+                redirect_url = inner.get("url")
+                if redirect_url and isinstance(redirect_url, str):
+                    return redirect_url
+
+        return None
+
+    async def _fetch_page_with_redirects(self, url: str, max_redirects: int = 3) -> tuple[dict, str]:
+        """Fetch a page and follow embedded redirects.
+
+        Returns (extracted_json_data, final_url).
+        """
+        current_url = url
+        for i in range(max_redirects + 1):
+            html_text = await self._fetch_html(current_url)
+            if not html_text:
+                return {}, current_url
+
+            data = self._extract_json_from_html(html_text)
+            if not data:
+                return {}, current_url
+
+            redirect = self._get_embedded_redirect(data)
+            if redirect and i < max_redirects:
+                new_url = f"{BASE_URL}{redirect}" if redirect.startswith("/") else redirect
+                logger.info("Following embedded redirect: %s -> %s", current_url, new_url)
+                current_url = new_url
+                await asyncio.sleep(1)
+                continue
+
+            return data, current_url
+
+        return {}, current_url
+
     async def search_by_keyword(self, search_query: dict) -> list[dict]:
         """Search Avito by scraping the search results page.
 
@@ -310,18 +360,17 @@ class AvitoAPI:
                 price_max=search_query.get("price_max"),
             )
 
-        html_text = await self._fetch_html(url)
-        if not html_text:
-            return []
-
-        data = self._extract_json_from_html(html_text)
+        data, final_url = await self._fetch_page_with_redirects(url)
         if not data:
             logger.warning("No embedded JSON found on search page")
             return []
 
         raw_items = self._find_catalog_items(data)
         if not raw_items:
-            logger.warning("No items found in catalog data (keys: %s)", list(data.keys())[:10])
+            logger.warning(
+                "No items found in catalog data (url=%s, keys=%s)",
+                final_url, list(data.keys())[:10],
+            )
             return []
 
         results = []
