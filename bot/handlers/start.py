@@ -104,24 +104,20 @@ async def test_api(callback: CallbackQuery) -> None:
             lines.append(f"  Город: {ad.get('city', '?')}")
             lines.append(f"  URL: {ad.get('url', '?')}")
 
-            # Try getting details
-            try:
-                details = await api.get_item_details(ad["ad_id"], url=ad.get("url", ""))
-                if details:
-                    lines.append(f"\n\u2705 Детали загружены:")
-                    lines.append(f"  Продавец: {details.get('seller_type', '?')}")
-                    lines.append(f"  Объявлений: {details.get('seller_items_count', '?')}")
-                    lines.append(f"  Фото: {len(details.get('images', []))} шт.")
-                    params = details.get("params_str", "N/A")
-                    if params and params != "N/A":
-                        lines.append(f"  Параметры: {params[:200]}")
-                    desc = details.get("description", "")
-                    if desc:
-                        lines.append(f"  Описание: {desc[:100]}...")
-                else:
-                    lines.append("\n\u26a0\ufe0f Детали не загрузились (пустой ответ)")
-            except Exception as e:
-                lines.append(f"\n\u274c Ошибка загрузки деталей: {e}")
+            # Extract details from search result data (no extra HTTP request)
+            raw_item = ad.get("_raw", {})
+            details = api.get_item_details(ad["ad_id"], raw_item=raw_item)
+            if details:
+                lines.append(f"\n\u2705 Детали из поиска:")
+                lines.append(f"  Продавец: {details.get('seller_type', '?')}")
+                lines.append(f"  Закрытых: {details.get('seller_closed_items', '?')}")
+                lines.append(f"  Фото: {len(details.get('images', []))} шт.")
+                params = details.get("params_str", "N/A")
+                if params and params != "N/A":
+                    lines.append(f"  Параметры: {params[:200]}")
+                desc = details.get("description", "")
+                if desc:
+                    lines.append(f"  Описание: {desc[:100]}...")
         else:
             lines.append("\n\u26a0\ufe0f 0 результатов. Проверь URL/ключевое слово или прокси.")
     except Exception as e:

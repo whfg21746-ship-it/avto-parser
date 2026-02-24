@@ -151,15 +151,9 @@ async def run_scan_cycle(bot: Bot) -> None:
                 if listing["price"] > matched_item["threshold_price"]:
                     continue
 
-                await api.delay()
-
-                # Step 4: Fetch full details only for matched + affordable listings
-                try:
-                    details = await api.get_item_details(ad_id, url=listing.get("url", ""))
-                except Exception as e:
-                    logger.error("Error fetching details for %s: %s", ad_id, e)
-                    total_errors += 1
-                    continue
+                # Step 4: Extract full details from search result data
+                raw_item = listing.get("_raw", {})
+                details = api.get_item_details(ad_id, raw_item=raw_item)
 
                 if not details:
                     await save_seen_ad(

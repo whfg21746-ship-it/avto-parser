@@ -400,119 +400,144 @@ class AvitoAPI:
             location = item.get("location", {})
             city = location.get("name", "") if isinstance(location, dict) else ""
 
-            # Extract listing params from IVA components (limited in search)
-            listing_params: dict[str, str] = {}
-            iva = item.get("iva")
-            if isinstance(iva, dict):
-                for steps in iva.values():
-                    if not isinstance(steps, list):
-                        continue
-                    for step in steps:
-                        if not isinstance(step, dict):
-                            continue
-                        cd = step.get("componentData", {})
-                        if not isinstance(cd, dict):
-                            continue
-                        payload = cd.get("payload", {})
-                        if isinstance(payload, dict):
-                            text = payload.get("text", "")
-                            if text and isinstance(text, str):
-                                listing_params["info"] = text
-
             results.append({
                 "ad_id": ad_id,
                 "title": item.get("title", ""),
                 "price": price,
                 "url": full_url,
                 "city": city,
-                "params": listing_params,
+                # Store full raw item for get_item_details()
+                "_raw": item,
             })
 
         logger.info("Extracted %d listings from search page", len(results))
         return results
 
-    async def get_item_details(self, ad_id: str, url: str = "") -> dict | None:
-        """Fetch full details for a specific listing.
+    @staticmethod
+    def _extract_seller_closed(text: str) -> int:
+        """Parse '112 завершённых объявлений' -> 112."""
+        if not text:
+            return 0
+        match = re.search(r"(\d+)", text)
+        return int(match.group(1)) if match else 0
 
-        Loads the listing HTML page and extracts embedded JSON.
-        """
-        if not url:
-            url = f"{BASE_URL}/{ad_id}"
+    @staticmethod
+    def _extract_images(item: dict) -> list[str]:
+        """Extract image URLs from search item data."""
+        urls: list[str] = []
 
-        html_text = await self._fetch_html(url)
-        if not html_text:
-            return None
+        # Try gallery.image_large_urls first (best quality)
+        gallery = item.get("gallery", {})
+        if isinstance(gallery, dict):
+            for key in ("image_large_urls", "image_urls"):
+                img_list = gallery.get(key, [])
+                if isinstance(img_list, list) and img_list:
+                    urls = [str(u) for u in img_list if u]
+                    if urls:
+                        return urls
+            # Single large image
+            for key in ("imageLargeUrl", "imageUrl"):
+                val = gallery.get(key)
+                if val and isinstance(val, str) and val.startswith("http"):
+                    urls.append(val)
 
-        data = self._extract_json_from_html(html_text)
-        if not data:
-            logger.warning("No embedded JSON found on item page %s", ad_id)
-            return None
-
-        # The item page JSON may nest the item data under various keys
-        item_data = data.get("item", data)
-
-        result: dict[str, Any] = {
-            "ad_id": ad_id,
-            "title": item_data.get("title", ""),
-            "description": item_data.get("description", ""),
-            "price": 0,
-            "url": url,
-            "city": "",
-            "seller_type": "private",
-            "seller_items_count": 0,
-            "seller_closed_items": 0,
-            "images": [],
-            "params_str": "N/A",
-        }
-
-        # Price
-        price_data = item_data.get("priceDetailed") or item_data.get("price")
-        if isinstance(price_data, dict):
-            result["price"] = _extract_price(price_data.get("value", 0))
-        elif isinstance(price_data, (int, float)):
-            result["price"] = int(price_data)
-
-        # Location
-        location = item_data.get("location", {})
-        if isinstance(location, dict):
-            result["city"] = location.get("name", "")
-
-        # Seller
-        seller = item_data.get("seller", {})
-        if isinstance(seller, dict):
-            result["seller_items_count"] = seller.get("itemsCount", 0)
-            result["seller_closed_items"] = seller.get("closedItemsCount", 0)
-            postfix = seller.get("postfix", "")
-            if "\u0427\u0430\u0441\u0442\u043d\u043e\u0435" in postfix:
-                result["seller_type"] = "private"
-            else:
-                result["seller_type"] = "shop"
-
-        # Images
-        images = item_data.get("images", [])
+        # Fallback: images list with size dicts
+        images = item.get("images", [])
         if isinstance(images, list):
             for img in images:
                 if isinstance(img, dict):
-                    for size in ("640x480", "1280x960"):
+                    for size in ("640x480", "1280x960", "208x156"):
                         val = img.get(size)
                         if val:
-                            result["images"].append(str(val))
+                            urls.append(str(val))
                             break
+                elif isinstance(img, str) and img.startswith("http"):
+                    urls.append(img)
 
-        # Params / attributes
-        params_raw = item_data.get("params", [])
-        if isinstance(params_raw, list):
-            parts = []
-            for p in params_raw:
-                if isinstance(p, dict):
-                    title = p.get("title", "")
-                    value = p.get("value", "")
-                    if title and value:
-                        parts.append(f"{title}: {value}")
-            if parts:
-                result["params_str"] = ", ".join(parts)
+        return urls
 
-        return result
+    @staticmethod
+    def _extract_params_str(item: dict) -> str:
+        """Extract human-readable params string from IVA components."""
+        parts: list[str] = []
+        iva = item.get("iva")
+        if not isinstance(iva, dict):
+            return "N/A"
+
+        for step_name in ("DescriptionStep", "FirstLineStep", "ThirdLineStep", "FourthLineStep"):
+            steps = iva.get(step_name)
+            if not isinstance(steps, list):
+                continue
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                cd = step.get("componentData", {})
+                if not isinstance(cd, dict):
+                    continue
+                payload = cd.get("payload", {})
+                if isinstance(payload, dict):
+                    text = payload.get("text", "")
+                    if text and isinstance(text, str) and len(text) < 200:
+                        parts.append(text)
+
+        return ", ".join(parts) if parts else "N/A"
+
+    def get_item_details(self, ad_id: str, raw_item: dict | None = None, **kwargs: Any) -> dict:
+        """Extract full details from a search result item.
+
+        Avito detail pages are fully client-side rendered (no embedded JSON),
+        but search results already contain all needed data: description,
+        images, seller info, params, etc.
+
+        Args:
+            ad_id: listing ID
+            raw_item: the full raw item dict from search results (_raw field)
+        """
+        if raw_item is None:
+            raw_item = {}
+
+        url_path = raw_item.get("urlPath", "")
+        full_url = f"{BASE_URL}{url_path}" if url_path else kwargs.get("url", "")
+
+        # Price
+        price = 0
+        price_data = raw_item.get("priceDetailed")
+        if isinstance(price_data, dict):
+            price = _extract_price(price_data.get("value", 0))
+
+        # Location
+        location = raw_item.get("location", {})
+        city = location.get("name", "") if isinstance(location, dict) else ""
+
+        # Seller info from closedItemsText ("112 завершённых объявлений")
+        closed_text = raw_item.get("closedItemsText", "")
+        seller_closed = self._extract_seller_closed(closed_text)
+
+        # Seller type from userLogo
+        seller_type = "private"
+        user_logo = raw_item.get("userLogo", {})
+        if isinstance(user_logo, dict) and user_logo.get("developerId"):
+            seller_type = "shop"
+
+        # Images
+        images = self._extract_images(raw_item)
+
+        # Params
+        params_str = self._extract_params_str(raw_item)
+
+        return {
+            "ad_id": ad_id,
+            "title": raw_item.get("title", ""),
+            "description": raw_item.get("description", ""),
+            "price": price,
+            "url": full_url,
+            "city": city,
+            "seller_type": seller_type,
+            "seller_items_count": 0,
+            "seller_closed_items": seller_closed,
+            "images": images,
+            "params_str": params_str,
+        }
 
     async def delay(self) -> None:
         """Random delay between requests."""
