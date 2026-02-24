@@ -300,9 +300,33 @@ for name, threshold, market in IPADS:
     ITEMS.append((4, 4, name, threshold, market))  # sq_id=4, cat_id=4
 
 
+CATEGORIES = [
+    ("Смартфоны Apple", 14),
+    ("Ноутбуки Apple", 17),
+    ("Наушники Apple", 31),
+    ("Планшеты Apple", 137),
+]
+
+
 def main():
+    os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
     db = sqlite3.connect(DB_PATH)
     cursor = db.cursor()
+
+    # Apply schema (CREATE IF NOT EXISTS — safe to run always)
+    schema_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "db", "schema.sql")
+    with open(schema_path, encoding="utf-8") as f:
+        cursor.executescript(f.read())
+
+    # Seed categories if empty
+    cursor.execute("SELECT COUNT(*) FROM categories")
+    if cursor.fetchone()[0] == 0:
+        for name, avito_id in CATEGORIES:
+            cursor.execute(
+                "INSERT INTO categories (name, avito_category_id) VALUES (?, ?)",
+                (name, avito_id),
+            )
+        print(f"Seeded {len(CATEGORIES)} categories")
 
     # Clear existing data (but keep categories and settings)
     cursor.execute("DELETE FROM seen_ads")
