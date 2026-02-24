@@ -1,15 +1,13 @@
 """Avito parameter auto-discovery module.
 
 Discovers the correct categoryId and params[N]=value filters
-for product models by querying Avito's suggest and search APIs.
+for product models by querying Avito's search API and web parsing.
 """
 
 import asyncio
-import json
 import logging
 import re
 from typing import Any
-from urllib.parse import parse_qs, urlparse
 
 import aiohttp
 
@@ -29,12 +27,6 @@ HEADERS = {
     "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8",
     "Referer": "https://m.avito.ru/",
 }
-
-# Suggest endpoints to try (in order)
-SUGGEST_ENDPOINTS = [
-    "https://www.avito.ru/web/1/suggest",
-    "https://m.avito.ru/api/9/suggest",
-]
 
 ITEMS_ENDPOINT = "https://m.avito.ru/api/9/items"
 
@@ -68,15 +60,19 @@ class ParamDiscovery:
                     if resp.status == 200:
                         return await resp.json(content_type=None)
                     elif resp.status == 429:
-                        logger.warning("Discovery: HTTP 429, pausing 60s")
+                        delay = 15 * (attempt + 1)
+                        logger.warning(
+                            "Discovery: HTTP 429, pausing %ds (attempt %d/3)",
+                            delay, attempt + 1,
+                        )
                         self.proxy_manager.force_rotate()
                         proxy = self.proxy_manager.get_proxy()
-                        await asyncio.sleep(60)
+                        await asyncio.sleep(delay)
                     elif resp.status == 403:
                         logger.warning("Discovery: HTTP 403, switching proxy")
                         self.proxy_manager.force_rotate()
                         proxy = self.proxy_manager.get_proxy()
-                        await asyncio.sleep(30)
+                        await asyncio.sleep(10)
                     else:
                         logger.warning(
                             "Discovery: HTTP %d from %s", resp.status, url
@@ -101,125 +97,15 @@ class ParamDiscovery:
                     if resp.status == 200:
                         return await resp.text()
                     elif resp.status in (429, 403):
+                        delay = 10 if resp.status == 403 else 15 * (attempt + 1)
                         self.proxy_manager.force_rotate()
                         proxy = self.proxy_manager.get_proxy()
-                        await asyncio.sleep(30 if resp.status == 403 else 60)
+                        await asyncio.sleep(delay)
                     else:
                         return None
             except (asyncio.TimeoutError, aiohttp.ClientError) as e:
                 logger.warning("Discovery: text request error attempt %d: %s", attempt + 1, e)
                 await asyncio.sleep(10)
-
-        return None
-
-    def _extract_params_from_url(self, url: str) -> dict[str, str]:
-        """Extract params[N]=value pairs from a URL."""
-        parsed = urlparse(url)
-        qs = parse_qs(parsed.query)
-        params = {}
-        for key, values in qs.items():
-            if key.startswith("params["):
-                params[key] = values[0]
-        return params
-
-    def _extract_category_from_url(self, url: str) -> int | None:
-        """Extract categoryId from URL query string."""
-        parsed = urlparse(url)
-        qs = parse_qs(parsed.query)
-        if "categoryId" in qs:
-            try:
-                return int(qs["categoryId"][0])
-            except (ValueError, IndexError):
-                pass
-        return None
-
-    async def discover_via_suggest(self, query: str) -> dict | None:
-        """Method A: Try Avito suggest/autocomplete API endpoints."""
-        for endpoint in SUGGEST_ENDPOINTS:
-            params = {
-                "key": config.AVITO_API_KEY,
-                "query": query,
-            }
-
-            data = await self._request(endpoint, params)
-            if not data:
-                continue
-
-            result = self._parse_suggest_response(data, query)
-            if result:
-                result["discovered_via"] = "suggest_api"
-                result["raw_response"] = data
-                return result
-
-        return None
-
-    def _parse_suggest_response(self, data: dict, query: str) -> dict | None:
-        """Parse suggest API response to extract category and params."""
-        # The suggest response typically has a "result" or "suggestions" field
-        # with items that contain URLs with categoryId and params
-        suggestions = (
-            data.get("result", {}).get("suggestions", [])
-            if isinstance(data.get("result"), dict)
-            else data.get("result", data.get("suggestions", []))
-        )
-
-        if isinstance(suggestions, dict):
-            suggestions = suggestions.get("items", suggestions.get("suggestions", []))
-
-        if not isinstance(suggestions, list):
-            # Try top-level items
-            suggestions = data.get("items", data.get("data", []))
-
-        if not isinstance(suggestions, list):
-            return None
-
-        query_lower = query.lower()
-
-        for item in suggestions:
-            if not isinstance(item, dict):
-                continue
-
-            # Look for URL-based suggestions (contain params in URL)
-            url = item.get("url", item.get("uri", ""))
-            title = item.get("title", item.get("text", item.get("name", "")))
-
-            if not url:
-                continue
-
-            # Check if this suggestion is relevant
-            if title and query_lower not in title.lower():
-                # Check if at least partially matching
-                query_words = query_lower.split()
-                title_lower = title.lower()
-                if not all(w in title_lower for w in query_words[:2]):
-                    continue
-
-            category_id = self._extract_category_from_url(url)
-            params = self._extract_params_from_url(url)
-
-            # Also check for categoryId in the item data itself
-            if not category_id:
-                category_id = item.get("categoryId", item.get("category_id"))
-                if category_id:
-                    try:
-                        category_id = int(category_id)
-                    except (ValueError, TypeError):
-                        category_id = None
-
-            # Also check for params in item data
-            if not params:
-                item_params = item.get("params", {})
-                if isinstance(item_params, dict):
-                    for k, v in item_params.items():
-                        if k.startswith("params["):
-                            params[k] = str(v)
-
-            if category_id or params:
-                return {
-                    "category_id": category_id,
-                    "params": params,
-                    "matched_title": title,
-                }
 
         return None
 
@@ -364,7 +250,7 @@ class ParamDiscovery:
     async def discover_params(self, model_name: str) -> dict:
         """Discover Avito params for a product model.
 
-        Tries methods A, B, C in order. Returns a result dict with:
+        Tries search API then web parsing. Returns a result dict with:
         - category_id: int or None
         - params: dict of params[N]=value
         - discovered_via: str method name
@@ -372,20 +258,7 @@ class ParamDiscovery:
         """
         logger.info("Discovering params for: %s", model_name)
 
-        # Method A: Suggest API
-        result = await self.discover_via_suggest(model_name)
-        if result and (result.get("category_id") or result.get("params")):
-            logger.info(
-                "Discovered %s via suggest: cat=%s, params=%d",
-                model_name,
-                result.get("category_id"),
-                len(result.get("params", {})),
-            )
-            return result
-
-        await asyncio.sleep(2)
-
-        # Method B: Search API
+        # Method A: Search API
         result = await self.discover_via_search(model_name)
         if result and (result.get("category_id") or result.get("params")):
             logger.info(
@@ -396,9 +269,9 @@ class ParamDiscovery:
             )
             return result
 
-        await asyncio.sleep(2)
+        await asyncio.sleep(5)
 
-        # Method C: Web page
+        # Method B: Web page parsing
         result = await self.discover_via_web(model_name)
         if result and (result.get("category_id") or result.get("params")):
             logger.info(
