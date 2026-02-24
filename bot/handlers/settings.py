@@ -3,15 +3,11 @@ import logging
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.keyboards.menus import back_main_keyboard, settings_keyboard
 from bot.states.item_states import SettingsFSM
-from db.models import (
-    get_active_search_queries,
-    get_setting,
-    set_setting,
-)
+from db.models import get_setting, set_setting
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -20,28 +16,153 @@ router = Router()
 @router.callback_query(F.data == "settings")
 async def show_settings(callback: CallbackQuery) -> None:
     monitoring = await get_setting("monitoring_enabled")
-    interval = await get_setting("scan_interval_seconds")
-    proxy_raw = await get_setting("proxy_list")
+    interval = await get_setting("scan_interval_seconds") or "60"
     max_seller = await get_setting("max_seller_items") or "10"
+    city = await get_setting("city")
+    proxy_raw = await get_setting("proxy_list")
 
     try:
         proxies = json.loads(proxy_raw) if proxy_raw else []
     except json.JSONDecodeError:
         proxies = []
 
-    search_queries = await get_active_search_queries()
-
     mon_status = "\u25b6\ufe0f Включён" if monitoring == "true" else "\u23f8 Выключен"
+    city_display = city if city else "Вся Россия"
+
     text = (
         "\u2699\ufe0f Настройки:\n\n"
-        f"Мониторинг: {mon_status}\n"
-        f"Интервал сканирования: {interval} сек\n"
-        f"Прокси: {len(proxies)} шт. активны\n"
-        f"Макс. объявлений продавца: {max_seller}\n"
-        f"Активных запросов: {len(search_queries)}"
+        f"\U0001f30d Город: {city_display}\n"
+        f"\U0001f4e1 Мониторинг: {mon_status}\n"
+        f"\u23f1 Интервал: {interval} сек\n"
+        f"\U0001f464 Макс. объявлений продавца: {max_seller}\n"
+        f"\U0001f4e1 Прокси: {len(proxies)} шт."
     )
     await callback.message.edit_text(text, reply_markup=settings_keyboard())
     await callback.answer()
+
+
+# --- City ---
+
+@router.callback_query(F.data == "setting_city")
+async def start_edit_city(callback: CallbackQuery, state: FSMContext) -> None:
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="\U0001f30d Вся Россия", callback_data="set_city_all")],
+        [InlineKeyboardButton(text="\u270f\ufe0f Ввести город", callback_data="set_city_enter")],
+        [InlineKeyboardButton(text="\u2b05\ufe0f Назад", callback_data="settings")],
+    ])
+    await callback.message.edit_text(
+        "Выберите город/регион:",
+        reply_markup=kb,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "set_city_all")
+async def set_city_all(callback: CallbackQuery) -> None:
+    await set_setting("city", "")
+    await set_setting("city_slug", "rossiya")
+    await callback.answer("\u2705 Город: Вся Россия")
+
+    # Return to settings
+    await show_settings(callback)
+
+
+@router.callback_query(F.data == "set_city_enter")
+async def set_city_enter(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(SettingsFSM.entering_city)
+    await callback.message.edit_text(
+        "Введите название города по-русски (например: Ставрополь, Москва, Краснодар).\n\n"
+        "Бот автоматически сконвертирует в формат Авито.",
+        reply_markup=back_main_keyboard(),
+    )
+    await callback.answer()
+
+
+# Cyrillic to Latin transliteration for Avito URL slugs
+_TRANSLIT = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "h", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
+
+# Common cities with known Avito slugs
+_CITY_SLUGS = {
+    "москва": "moskva",
+    "санкт-петербург": "sankt-peterburg",
+    "петербург": "sankt-peterburg",
+    "спб": "sankt-peterburg",
+    "новосибирск": "novosibirsk",
+    "екатеринбург": "ekaterinburg",
+    "казань": "kazan",
+    "нижний новгород": "nizhniy_novgorod",
+    "краснодар": "krasnodar",
+    "ставрополь": "stavropol",
+    "ростов-на-дону": "rostov-na-donu",
+    "ростов": "rostov-na-donu",
+    "самара": "samara",
+    "уфа": "ufa",
+    "красноярск": "krasnoyarsk",
+    "воронеж": "voronezh",
+    "пермь": "perm",
+    "волгоград": "volgograd",
+    "челябинск": "chelyabinsk",
+    "омск": "omsk",
+    "сочи": "sochi",
+    "тюмень": "tyumen",
+    "владивосток": "vladivostok",
+    "хабаровск": "habarovsk",
+    "иркутск": "irkutsk",
+    "барнаул": "barnaul",
+    "тула": "tula",
+    "рязань": "ryazan",
+    "калининград": "kaliningrad",
+    "саратов": "saratov",
+    "томск": "tomsk",
+    "курск": "kursk",
+    "тверь": "tver",
+    "белгород": "belgorod",
+    "ярославль": "yaroslavl",
+}
+
+
+def _city_to_slug(city_name: str) -> str:
+    city_lower = city_name.lower().strip()
+
+    # Check known cities first
+    if city_lower in _CITY_SLUGS:
+        return _CITY_SLUGS[city_lower]
+
+    # Transliterate
+    result = []
+    for ch in city_lower:
+        if ch in _TRANSLIT:
+            result.append(_TRANSLIT[ch])
+        elif ch == " ":
+            result.append("-")
+        elif ch == "-":
+            result.append("-")
+        elif ch.isascii() and ch.isalnum():
+            result.append(ch)
+    return "".join(result) or "rossiya"
+
+
+@router.message(SettingsFSM.entering_city)
+async def process_city(message: Message, state: FSMContext) -> None:
+    city_name = message.text.strip()
+    if not city_name:
+        await message.answer("Город не может быть пустым:")
+        return
+
+    slug = _city_to_slug(city_name)
+    await set_setting("city", city_name)
+    await set_setting("city_slug", slug)
+    await state.clear()
+    await message.answer(
+        f"\u2705 Город установлен: {city_name} ({slug})",
+        reply_markup=back_main_keyboard(),
+    )
 
 
 # --- Interval ---

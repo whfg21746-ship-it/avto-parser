@@ -7,7 +7,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import config
-from bot.handlers import items, search_queries, settings, start
+from bot.handlers import categories, items, settings, start
 from db.database import init_db
 from db.models import get_setting
 from parser.scheduler import run_scan_cycle
@@ -42,8 +42,8 @@ async def main() -> None:
 
     # Register routers
     dp.include_router(start.router)
-    dp.include_router(search_queries.router)
     dp.include_router(items.router)
+    dp.include_router(categories.router)
     dp.include_router(settings.router)
 
     # Set up scheduler
@@ -63,7 +63,6 @@ async def main() -> None:
     scheduler.start()
     logger.info("Scheduler started with interval %d seconds", interval)
 
-    # aiogram 3.x handles SIGINT/SIGTERM gracefully on its own
     try:
         logger.info("Bot starting...")
         await dp.start_polling(bot, close_bot_session=False)
