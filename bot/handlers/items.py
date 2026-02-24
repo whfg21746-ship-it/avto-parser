@@ -15,8 +15,10 @@ from bot.keyboards.menus import (
     city_picker_keyboard,
     confirm_built_url_keyboard,
     confirm_delete_keyboard,
+    custom_prompt_ask_keyboard,
     item_confirm_keyboard,
     item_detail_keyboard,
+    item_prompt_manage_keyboard,
     main_menu,
 )
 from bot.states.item_states import AddItemFSM, EditItemFSM
@@ -60,6 +62,8 @@ def _item_detail_text(item: dict, stats: dict) -> str:
     status = "\u2705 Активен" if item["is_active"] else "\u23f8 Выключен"
     profit = item["market_price"] - item["threshold_price"]
     url_short = _shorten_url(item.get("avito_url", ""))
+    prompt = item.get("custom_prompt")
+    prompt_line = f"\U0001f916 Подсказка: \u00ab{prompt[:50]}...\u00bb\n" if prompt and len(prompt) > 50 else (f"\U0001f916 Подсказка: \u00ab{prompt}\u00bb\n" if prompt else "")
     return (
         f"\U0001f4e6 {item['name']}\n\n"
         f"Статус: {status}\n"
@@ -68,6 +72,7 @@ def _item_detail_text(item: dict, stats: dict) -> str:
         f"Порог: {item['threshold_price']:,}\u20bd\n"
         f"Перепродажа: {item['market_price']:,}\u20bd\n"
         f"Профит: ~{profit:,}\u20bd\n"
+        f"{prompt_line}"
         f"Найдено: {stats['total']}  |  Алертов: {stats['alerted']}"
     )
 
@@ -556,11 +561,54 @@ async def market_price_entered(message: Message, state: FSMContext) -> None:
         await message.answer("Некорректная цена. Введи число:")
         return
     await state.update_data(market_price=price)
-    await state.set_state(AddItemFSM.confirming)
+    await state.set_state(AddItemFSM.choosing_custom_prompt)
+    await message.answer(
+        "Хотите добавить подсказку для ИИ для этого товара?\n"
+        "Подсказка поможет ИИ лучше оценить именно этот товар.",
+        reply_markup=custom_prompt_ask_keyboard(),
+    )
 
+
+@router.callback_query(F.data == "custom_prompt_skip", AddItemFSM.choosing_custom_prompt)
+async def item_prompt_skip(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(AddItemFSM.confirming)
     data = await state.get_data()
+    await _show_item_confirm(callback.message, data, edit_message=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "custom_prompt_add", AddItemFSM.choosing_custom_prompt)
+async def item_prompt_add(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(AddItemFSM.entering_custom_prompt)
+    await callback.message.edit_text(
+        "Введите подсказку для ИИ.\n\n"
+        "Примеры:\n"
+        "\u2022 \u00abПроверяй Face ID, состояние АКБ > 85%\u00bb\n"
+        "\u2022 \u00abВажно: дрифт стиков, наличие коробки\u00bb\n\n"
+        "Введите текст подсказки:",
+        reply_markup=back_main_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.message(AddItemFSM.entering_custom_prompt)
+async def item_prompt_entered(message: Message, state: FSMContext) -> None:
+    prompt = message.text.strip()
+    if not prompt:
+        await message.answer("Подсказка не может быть пустой. Введите текст:")
+        return
+
+    await state.update_data(custom_prompt=prompt)
+    await state.set_state(AddItemFSM.confirming)
+    data = await state.get_data()
+    await _show_item_confirm(message, data, edit_message=False)
+
+
+async def _show_item_confirm(msg, data: dict, edit_message: bool = False) -> None:
     profit = data["market_price"] - data["threshold_price"]
     url_short = _shorten_url(data["avito_url"])
+    prompt = data.get("custom_prompt")
+    prompt_line = f"\U0001f916 Подсказка: \u00ab{prompt}\u00bb\n" if prompt else ""
     text = (
         f"\U0001f4e6 Новый товар:\n\n"
         f"Название: {data['item_name']}\n"
@@ -568,9 +616,13 @@ async def market_price_entered(message: Message, state: FSMContext) -> None:
         f"Ссылка: {url_short}\n"
         f"Порог: {data['threshold_price']:,}\u20bd\n"
         f"Перепродажа: ~{data['market_price']:,}\u20bd\n"
-        f"Профит: ~{profit:,}\u20bd"
+        f"Профит: ~{profit:,}\u20bd\n"
+        f"{prompt_line}"
     )
-    await message.answer(text, reply_markup=item_confirm_keyboard())
+    if edit_message:
+        await msg.edit_text(text, reply_markup=item_confirm_keyboard())
+    else:
+        await msg.answer(text, reply_markup=item_confirm_keyboard())
 
 
 @router.callback_query(F.data == "item_confirm", AddItemFSM.confirming)
@@ -582,6 +634,7 @@ async def confirm_add_item(callback: CallbackQuery, state: FSMContext) -> None:
         avito_url=data["avito_url"],
         threshold_price=data["threshold_price"],
         market_price=data["market_price"],
+        custom_prompt=data.get("custom_prompt"),
     )
 
     await state.clear()
@@ -632,3 +685,92 @@ async def cancel_add_item(callback: CallbackQuery, state: FSMContext) -> None:
         reply_markup=main_menu(is_active, has_items=has_items),
     )
     await callback.answer("\u274c Отменено")
+
+
+# --- Item Prompt Management ---
+
+@router.callback_query(F.data.startswith("item_edit_prompt_") & ~F.data.startswith("item_prompt_edit_"))
+async def show_item_prompt(callback: CallbackQuery) -> None:
+    item_id = int(callback.data.split("_")[-1])
+    item = await get_item(item_id)
+    if not item:
+        await callback.answer("Товар не найден")
+        return
+
+    prompt = item.get("custom_prompt")
+    has_prompt = bool(prompt)
+
+    if has_prompt:
+        text = (
+            f"\U0001f916 Подсказка для ИИ\n"
+            f"Товар: \u00ab{item['name']}\u00bb\n\n"
+            f"\u00ab{prompt}\u00bb"
+        )
+    else:
+        text = (
+            f"\U0001f916 Подсказка для ИИ\n"
+            f"Товар: \u00ab{item['name']}\u00bb\n\n"
+            "Подсказка не задана."
+        )
+
+    await callback.message.edit_text(
+        text, reply_markup=item_prompt_manage_keyboard(item_id, has_prompt),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("item_prompt_edit_"))
+async def start_edit_item_prompt(callback: CallbackQuery, state: FSMContext) -> None:
+    item_id = int(callback.data.split("_")[-1])
+    item = await get_item(item_id)
+    if not item:
+        await callback.answer("Товар не найден")
+        return
+
+    await state.set_state(EditItemFSM.entering_custom_prompt)
+    await state.update_data(edit_item_id=item_id)
+
+    current = item.get("custom_prompt")
+    hint = f"\nТекущая подсказка: \u00ab{current}\u00bb\n" if current else ""
+    await callback.message.edit_text(
+        f"\U0001f916 Товар: \u00ab{item['name']}\u00bb\n{hint}\n"
+        "Введите новую подсказку для ИИ:",
+        reply_markup=back_main_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.message(EditItemFSM.entering_custom_prompt)
+async def process_edit_item_prompt(message: Message, state: FSMContext) -> None:
+    prompt = message.text.strip()
+    if not prompt:
+        await message.answer("Подсказка не может быть пустой. Введите текст:")
+        return
+
+    data = await state.get_data()
+    item_id = data["edit_item_id"]
+    await update_item_field(item_id, "custom_prompt", prompt)
+    await state.clear()
+
+    item = await get_item(item_id)
+    stats = await get_item_stats(item_id)
+    await message.answer(
+        f"\u2705 Подсказка обновлена!\n\n" + _item_detail_text(item, stats),
+        reply_markup=item_detail_keyboard(item),
+        disable_web_page_preview=True,
+    )
+
+
+@router.callback_query(F.data.startswith("item_prompt_del_"))
+async def delete_item_prompt(callback: CallbackQuery) -> None:
+    item_id = int(callback.data.split("_")[-1])
+    await update_item_field(item_id, "custom_prompt", None)
+
+    item = await get_item(item_id)
+    stats = await get_item_stats(item_id)
+    await callback.message.edit_text(
+        f"\u2705 Подсказка удалена.\n\n" + _item_detail_text(item, stats),
+        reply_markup=item_detail_keyboard(item),
+        disable_web_page_preview=True,
+    )
+    await callback.answer("\U0001f5d1 Подсказка удалена")

@@ -53,6 +53,17 @@ async def init_db() -> None:
         schema_sql = SCHEMA_PATH.read_text(encoding="utf-8")
         await db.executescript(schema_sql)
 
+        # Migrate: add custom_prompt columns if missing
+        for table in ("categories", "items"):
+            cursor = await db.execute(f"PRAGMA table_info({table})")
+            columns = {row[1] for row in await cursor.fetchall()}
+            if "custom_prompt" not in columns:
+                await db.execute(
+                    f"ALTER TABLE {table} ADD COLUMN custom_prompt TEXT DEFAULT NULL"
+                )
+                logger.info("Added custom_prompt column to %s", table)
+        await db.commit()
+
         # Seed default settings if table is empty
         cursor = await db.execute("SELECT COUNT(*) FROM settings")
         row = await cursor.fetchone()

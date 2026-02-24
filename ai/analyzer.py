@@ -95,10 +95,24 @@ USER_PROMPT_TEMPLATE = """Товар: {item_name}
 ---
 
 Характеристики: {ad_params}
-
+{custom_instructions}
 Дай экспертную оценку."""
 
 VALID_RECOMMENDATIONS = frozenset(["BUY", "CHECK", "SKIP"])
+
+
+def _build_custom_instructions(item: dict) -> str:
+    """Build custom instructions block from item and category prompts.
+
+    Priority: item custom_prompt overrides category custom_prompt.
+    """
+    item_prompt = item.get("custom_prompt")
+    cat_prompt = item.get("category_custom_prompt")
+
+    prompt = item_prompt or cat_prompt
+    if not prompt:
+        return ""
+    return f"\nДополнительные инструкции от пользователя:\n{prompt}\n"
 
 
 def validate_ai_response(response: dict) -> dict | None:
@@ -137,6 +151,8 @@ async def analyze_ad(item: dict, ad_data: dict) -> dict | None:
     """Send listing to GPT-4o-mini for analysis. Returns parsed verdict dict or None."""
     client = openai.AsyncOpenAI(api_key=config.OPENAI_API_KEY)
 
+    custom_instructions = _build_custom_instructions(item)
+
     user_prompt = USER_PROMPT_TEMPLATE.format(
         item_name=item["name"],
         threshold_price=item["threshold_price"],
@@ -146,6 +162,7 @@ async def analyze_ad(item: dict, ad_data: dict) -> dict | None:
         ad_title=ad_data.get("title", ""),
         ad_description=ad_data.get("description", "Описание отсутствует"),
         ad_params=ad_data.get("params_str", "N/A"),
+        custom_instructions=custom_instructions,
     )
 
     try:

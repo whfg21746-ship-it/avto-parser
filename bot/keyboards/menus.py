@@ -104,6 +104,19 @@ def item_confirm_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def custom_prompt_ask_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="\u270d\ufe0f Добавить подсказку",
+            callback_data="custom_prompt_add",
+        )],
+        [InlineKeyboardButton(
+            text="\u23e9 Пропустить",
+            callback_data="custom_prompt_skip",
+        )],
+    ])
+
+
 # --- Categories screens ---
 
 def categories_list_keyboard(categories: list[dict]) -> InlineKeyboardMarkup:
@@ -147,6 +160,10 @@ def category_manage_keyboard(category: dict, items_count: int, active_count: int
         text="\U0001f4cb Список товаров",
         callback_data=f"cat_items_{cat_id}_0",
     )])
+    rows.append([InlineKeyboardButton(
+        text="\U0001f916 Подсказка для ИИ",
+        callback_data=f"cat_prompt_{cat_id}",
+    )])
     rows.append([
         InlineKeyboardButton(
             text="\u270f\ufe0f Переименовать",
@@ -158,6 +175,52 @@ def category_manage_keyboard(category: dict, items_count: int, active_count: int
         ),
     ])
     rows.append([InlineKeyboardButton(text="\u2b05\ufe0f Назад", callback_data="categories_list")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def cat_prompt_manage_keyboard(cat_id: int, has_prompt: bool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if has_prompt:
+        rows.append([InlineKeyboardButton(
+            text="\u270f\ufe0f Изменить подсказку",
+            callback_data=f"cat_prompt_edit_{cat_id}",
+        )])
+        rows.append([InlineKeyboardButton(
+            text="\U0001f5d1 Удалить подсказку",
+            callback_data=f"cat_prompt_del_{cat_id}",
+        )])
+    else:
+        rows.append([InlineKeyboardButton(
+            text="\u270d\ufe0f Добавить подсказку",
+            callback_data=f"cat_prompt_edit_{cat_id}",
+        )])
+    rows.append([InlineKeyboardButton(
+        text="\u2b05\ufe0f Назад",
+        callback_data=f"cat_manage_{cat_id}",
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def item_prompt_manage_keyboard(item_id: int, has_prompt: bool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if has_prompt:
+        rows.append([InlineKeyboardButton(
+            text="\u270f\ufe0f Изменить подсказку",
+            callback_data=f"item_prompt_edit_{item_id}",
+        )])
+        rows.append([InlineKeyboardButton(
+            text="\U0001f5d1 Удалить подсказку",
+            callback_data=f"item_prompt_del_{item_id}",
+        )])
+    else:
+        rows.append([InlineKeyboardButton(
+            text="\u270d\ufe0f Добавить подсказку",
+            callback_data=f"item_prompt_edit_{item_id}",
+        )])
+    rows.append([InlineKeyboardButton(
+        text="\u2b05\ufe0f Назад",
+        callback_data=f"item_view_{item_id}",
+    )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -254,6 +317,12 @@ def item_detail_keyboard(item: dict) -> InlineKeyboardMarkup:
             InlineKeyboardButton(
                 text="\U0001f517 Изменить ссылку",
                 callback_data=f"item_edit_url_{item['id']}",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="\U0001f916 Подсказка для ИИ",
+                callback_data=f"item_edit_prompt_{item['id']}",
             ),
         ],
         [

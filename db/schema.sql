@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE TABLE IF NOT EXISTS categories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
+    custom_prompt TEXT DEFAULT NULL,
     is_active BOOLEAN DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -21,6 +22,7 @@ CREATE TABLE IF NOT EXISTS items (
     model_pattern TEXT,
     threshold_price INTEGER NOT NULL,
     market_price INTEGER NOT NULL,
+    custom_prompt TEXT DEFAULT NULL,
     is_active BOOLEAN DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
