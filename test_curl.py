@@ -1,11 +1,15 @@
 """Quick smoke-test for the new web-scraping approach.
 
-Run:  python test_curl.py
+Run on VPS:
+  python test_curl.py
+  TEST_PROXY="" python test_curl.py          # without proxy
+  TEST_PROXY="http://user:pass@host:port" python test_curl.py
 """
 import asyncio
 import html as html_lib
 import json
 import os
+import sys
 
 from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession
@@ -56,26 +60,41 @@ def find_items(data: dict) -> list[dict]:
 
 async def test():
     proxies = {"http": PROXY, "https": PROXY} if PROXY else None
+    print(f"Proxy: {PROXY or '(none)'}\n")
+
     s = AsyncSession(impersonate="chrome136", proxies=proxies, timeout=30)
 
     # Step 1: Warm up
     print("=== Pre-warm ===")
-    r = await s.get(
-        "https://www.avito.ru/",
-        headers={"Accept": "text/html", "Accept-Language": "ru-RU,ru;q=0.9"},
-    )
-    print(f"Warmup: {r.status_code}")
+    try:
+        r = await s.get(
+            "https://www.avito.ru/",
+            headers={"Accept": "text/html", "Accept-Language": "ru-RU,ru;q=0.9"},
+        )
+        print(f"Warmup: {r.status_code}")
+    except Exception as e:
+        print(f"Warmup FAILED: {e}")
+        print("\nНе удалось подключиться к avito.ru.")
+        print("Проверь прокси или запусти на VPS с российским IP.")
+        s.close()
+        return
     await asyncio.sleep(2)
 
     # Step 2: Fetch search page
     print(f"\n=== Fetch search page ===\n{TEST_URL}")
-    r = await s.get(
-        TEST_URL,
-        headers={
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8",
-        },
-    )
+    try:
+        r = await s.get(
+            TEST_URL,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8",
+            },
+        )
+    except Exception as e:
+        print(f"Search FAILED: {e}")
+        s.close()
+        return
+
     print(f"Status: {r.status_code}, Size: {len(r.text)} bytes")
 
     if r.status_code != 200:
@@ -83,10 +102,34 @@ async def test():
         s.close()
         return
 
-    # Step 3: Extract JSON
+    # Step 3: Count script types for debugging
+    soup_debug = BeautifulSoup(r.text, "html.parser")
+    script_types = {}
+    for sc in soup_debug.select("script"):
+        st = sc.get("type", "(none)")
+        script_types[st] = script_types.get(st, 0) + 1
+    print(f"\nScript tags by type: {script_types}")
+
+    # Step 4: Extract JSON
     print("\n=== Extract embedded JSON ===")
     data = extract_json_from_html(r.text)
-    print(f"Top-level keys: {list(data.keys())[:15]}")
+    if data:
+        print(f"Top-level keys: {list(data.keys())[:20]}")
+    else:
+        print("NO mime/invalid JSON found!")
+        print("\nFallback: checking __initialData__ ...")
+        import re
+        for pat in [r'window\.__initialData__\s*=\s*"(.+?)"', r'window\.__initialData__\s*=\s*(\{.+?\})\s*;']:
+            m = re.search(pat, r.text, re.DOTALL)
+            if m:
+                print(f"  Found __initialData__ match ({len(m.group(1))} chars)")
+                break
+        else:
+            print("  No __initialData__ either.")
+        print("\nDumping first 2000 chars of HTML for debugging:")
+        print(r.text[:2000])
+        s.close()
+        return
 
     items = find_items(data)
     print(f"Found {len(items)} items in catalog")
@@ -107,36 +150,55 @@ async def test():
             print(f"      ID: {item_id}")
             print(f"      URL: https://www.avito.ru{url_path}")
 
-        # Step 4: Test item details
+        # Step 5: Test item details
         first = items[0]
         url_path = first.get("urlPath", "")
         if url_path:
             detail_url = f"https://www.avito.ru{url_path}"
             print(f"\n=== Fetch item details ===\n{detail_url}")
             await asyncio.sleep(3)
-            r2 = await s.get(
-                detail_url,
-                headers={
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "ru-RU,ru;q=0.9",
-                },
-            )
+            try:
+                r2 = await s.get(
+                    detail_url,
+                    headers={
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Accept-Language": "ru-RU,ru;q=0.9",
+                    },
+                )
+            except Exception as e:
+                print(f"Detail fetch FAILED: {e}")
+                s.close()
+                return
+
             print(f"Status: {r2.status_code}, Size: {len(r2.text)} bytes")
             if r2.status_code == 200:
                 detail_data = extract_json_from_html(r2.text)
-                print(f"Detail top-level keys: {list(detail_data.keys())[:15]}")
-                # Try to find description
-                desc = detail_data.get("description", "")
-                if not desc:
-                    item_sub = detail_data.get("item", {})
-                    desc = item_sub.get("description", "") if isinstance(item_sub, dict) else ""
-                seller = detail_data.get("seller", {})
-                print(f"Description: {desc[:120]}..." if desc else "Description: (not found)")
-                print(f"Seller data: {seller}" if seller else "Seller: (not found in top level)")
+                if detail_data:
+                    print(f"Detail top-level keys: {list(detail_data.keys())[:20]}")
+                    # Try to find description
+                    desc = detail_data.get("description", "")
+                    if not desc:
+                        item_sub = detail_data.get("item", {})
+                        desc = item_sub.get("description", "") if isinstance(item_sub, dict) else ""
+                    seller = detail_data.get("seller", {})
+                    print(f"Description: {desc[:120]}..." if desc else "Description: (not found)")
+                    if seller:
+                        print(f"Seller: {json.dumps(seller, ensure_ascii=False)[:200]}")
+                    else:
+                        print("Seller: (not found in top level)")
+                else:
+                    print("NO mime/invalid JSON on detail page!")
+                    # Debug: dump script types
+                    soup2 = BeautifulSoup(r2.text, "html.parser")
+                    st2 = {}
+                    for sc in soup2.select("script"):
+                        t = sc.get("type", "(none)")
+                        st2[t] = st2.get(t, 0) + 1
+                    print(f"Script types on detail page: {st2}")
     else:
         print("\nNo items found! Dumping data structure for debugging:")
         for key, val in data.items():
-            val_str = str(val)[:100]
+            val_str = str(val)[:150]
             print(f"  {key}: {val_str}")
 
     s.close()
