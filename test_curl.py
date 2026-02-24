@@ -217,6 +217,20 @@ async def test():
         # Show results
         print(f"\nFOUND {len(items)} items!")
         print(f"Final URL: {current_url}")
+
+        # Dump full structure of first item
+        first_item = items[0]
+        print(f"\n--- First item FULL keys ---")
+        for k, v in first_item.items():
+            if isinstance(v, dict):
+                print(f"  {k}: dict({len(v)}) keys={list(v.keys())[:8]}")
+            elif isinstance(v, list):
+                print(f"  {k}: list[{len(v)}]")
+            elif isinstance(v, str) and len(v) > 80:
+                print(f"  {k}: str({len(v)} chars) = {v[:60]}...")
+            else:
+                print(f"  {k}: {v}")
+
         print("\n--- First 5 items ---")
         for i, item in enumerate(items[:5]):
             title = item.get("title", "?")
@@ -231,117 +245,56 @@ async def test():
             if url_path:
                 print(f"      URL: {BASE}{url_path}")
 
-        # Try detail page for first item
-        first_path = items[0].get("urlPath", "")
-        if first_path:
-            detail_url = f"{BASE}{first_path}"
-            print(f"\n=== Detail page: {detail_url} ===")
-            await asyncio.sleep(3)
-            r2, html2 = await fetch_page(s, detail_url)
-            if html2:
-                print(f"HTTP 200, {len(html2)} bytes")
+        # Try internal API for item details
+        first_item = items[0]
+        item_id = first_item.get("id", "")
+        if item_id:
+            print(f"\n=== Trying internal APIs for item {item_id} ===")
+            await asyncio.sleep(2)
 
-                # Diagnostic: show script types on detail page
-                soup2 = BeautifulSoup(html2, "html.parser")
-                script_types2 = {}
-                for sc in soup2.select("script"):
-                    st = sc.get("type", "(none)")
-                    script_types2[st] = script_types2.get(st, 0) + 1
-                print(f"  Script types: {script_types2}")
+            api_urls = [
+                f"{BASE}/web/1/items/{item_id}",
+                f"{BASE}/web/2/items/{item_id}",
+                f"{BASE}/api/14/items/{item_id}",
+                f"{BASE}/api/13/items/{item_id}",
+            ]
 
-                # Check for various data patterns
-                import re
-                patterns = {
-                    "window.__initialData__": r"window\.__initialData__",
-                    "window.__APP_CONFIG__": r"window\.__APP_CONFIG__",
-                    "window.__PRELOADED_STATE__": r"window\.__PRELOADED_STATE__",
-                    "buyerItem": r'"buyerItem"',
-                    "item-view": r'data-marker="item-view"',
-                    "description": r'itemprop="description"',
-                }
-                for name, pat in patterns.items():
-                    if re.search(pat, html2):
-                        print(f"  Found pattern: {name}")
-
-                raw2 = extract_raw_json(html2)
-                if raw2:
-                    state2 = get_state(raw2)
-
-                    # Follow redirect on detail page too
-                    redirect2 = get_embedded_redirect(state2)
-                    if redirect2:
-                        print(f"  -> Detail redirect to: {redirect2}")
-                        await asyncio.sleep(1)
-                        r3, html3 = await fetch_page(s, f"{BASE}{redirect2}")
-                        if html3:
-                            raw2 = extract_raw_json(html3)
-                            state2 = get_state(raw2) if raw2 else {}
-
-                    # Look for item data in known paths
-                    for try_path in ["buyerItem", "item", "data.buyerItem", "data.item", "data"]:
-                        obj = state2
-                        for part in try_path.split("."):
-                            obj = obj.get(part, {}) if isinstance(obj, dict) else {}
-                        if isinstance(obj, dict) and (obj.get("title") or obj.get("description")):
-                            print(f"\nItem data at '{try_path}':")
-                            print(f"  title: {obj.get('title', '?')}")
-                            desc = obj.get("description", "")
-                            print(f"  description: {desc[:150]}..." if len(desc) > 150 else f"  description: {desc or '(none)'}")
-                            price = obj.get("price") or obj.get("priceDetailed", {})
-                            print(f"  price: {price}")
-                            seller = obj.get("seller", {})
-                            if isinstance(seller, dict):
-                                print(f"  seller: items={seller.get('itemsCount', '?')}, closed={seller.get('closedItemsCount', '?')}")
-                            params = obj.get("params", [])
-                            if params and isinstance(params, list):
-                                print(f"  params ({len(params)}): {json.dumps(params[:3], ensure_ascii=False)[:300]}")
-                            break
-                    else:
-                        print("  Could not find item data in JSON")
-                        print(f"  state keys: {list(state2.keys())[:15]}")
-                else:
-                    print("  No mime/invalid JSON found!")
-                    # Try to extract data from other script tags
-                    for sc in soup2.select("script"):
-                        text = sc.text.strip()
-                        if not text or len(text) < 100:
-                            continue
-                        sc_type = sc.get("type", "(none)")
-                        # Look for JSON-like data in script tags
-                        if sc_type == "application/json":
-                            try:
-                                data = json.loads(text)
-                                if isinstance(data, dict):
-                                    print(f"  application/json script: keys={list(data.keys())[:10]}")
-                            except Exception:
-                                pass
-                        # Look for window.__initialData__
-                        if "initialData" in text or "INITIAL" in text:
-                            print(f"  Found initialData in {sc_type} script ({len(text)} chars)")
-                            # Try to extract
-                            m = re.search(r'window\.__initialData__\s*=\s*"(.+?)"\s*;', text)
-                            if m:
-                                print(f"    __initialData__ (encoded): {len(m.group(1))} chars")
-                                try:
-                                    decoded = json.loads(f'"{m.group(1)}"')
-                                    parsed = json.loads(decoded)
-                                    print(f"    Decoded keys: {list(parsed.keys())[:10]}")
-                                    state_d = parsed.get("state", parsed)
-                                    if isinstance(state_d, dict):
-                                        for try_path in ["buyerItem", "item", "data.buyerItem", "data.item"]:
-                                            obj = state_d
-                                            for part in try_path.split("."):
-                                                obj = obj.get(part, {}) if isinstance(obj, dict) else {}
-                                            if isinstance(obj, dict) and (obj.get("title") or obj.get("description")):
-                                                print(f"\n    Item data at '{try_path}':")
-                                                print(f"      title: {obj.get('title', '?')}")
-                                                desc = obj.get("description", "")
-                                                print(f"      description: {desc[:100]}..." if desc else "      description: (none)")
-                                                break
-                                except Exception as e:
-                                    print(f"    Parse error: {e}")
-            else:
-                print(f"  Detail page failed")
+            for api_url in api_urls:
+                try:
+                    r_api = await s.get(
+                        api_url,
+                        headers={
+                            "Accept": "application/json",
+                            "Accept-Language": "ru-RU,ru;q=0.9",
+                            "Referer": current_url,
+                            "Origin": BASE,
+                        },
+                    )
+                    print(f"  {api_url}")
+                    print(f"    Status: {r_api.status_code}, Size: {len(r_api.text)} bytes")
+                    if r_api.status_code == 200:
+                        try:
+                            data = r_api.json()
+                            if isinstance(data, dict):
+                                print(f"    Keys: {list(data.keys())[:10]}")
+                                # Show useful fields
+                                for field in ["title", "description", "price", "seller"]:
+                                    val = data.get(field)
+                                    if val:
+                                        if isinstance(val, str) and len(val) > 100:
+                                            print(f"    {field}: {val[:100]}...")
+                                        elif isinstance(val, dict):
+                                            print(f"    {field}: {json.dumps(val, ensure_ascii=False)[:200]}")
+                                        else:
+                                            print(f"    {field}: {val}")
+                                break
+                        except Exception:
+                            print(f"    (not JSON): {r_api.text[:150]}")
+                    elif r_api.status_code in (401, 403):
+                        print(f"    Body: {r_api.text[:150]}")
+                    await asyncio.sleep(1)
+                except Exception as e:
+                    print(f"    Error: {e}")
 
         # Success
         break
