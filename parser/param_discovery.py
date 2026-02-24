@@ -6,27 +6,17 @@ for product models by querying Avito's search API and web parsing.
 
 import asyncio
 import logging
+import random
 import re
 from typing import Any
 
 import aiohttp
 
 import config
+from parser.avito_api import _USER_AGENTS, _random_headers
 from parser.proxy_manager import ProxyManager
 
 logger = logging.getLogger(__name__)
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Mobile Safari/537.36"
-    ),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8",
-    "Referer": "https://m.avito.ru/",
-}
 
 ITEMS_ENDPOINT = "https://m.avito.ru/api/9/items"
 
@@ -41,8 +31,9 @@ class ParamDiscovery:
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             timeout = aiohttp.ClientTimeout(total=30)
+            jar = aiohttp.CookieJar()
             self._session = aiohttp.ClientSession(
-                headers=HEADERS, timeout=timeout
+                timeout=timeout, cookie_jar=jar
             )
         return self._session
 
@@ -56,13 +47,15 @@ class ParamDiscovery:
 
         for attempt in range(3):
             try:
+                headers = _random_headers()
                 async with session.get(
-                    url, params=params, proxy=proxy, allow_redirects=False
+                    url, params=params, proxy=proxy,
+                    headers=headers, allow_redirects=False,
                 ) as resp:
                     if resp.status == 200:
                         return await resp.json(content_type=None)
                     elif resp.status == 429:
-                        delay = 15 * (attempt + 1)
+                        delay = 20 * (attempt + 1)
                         logger.warning(
                             "Discovery: HTTP 429, pausing %ds (attempt %d/3)",
                             delay, attempt + 1,
@@ -71,13 +64,14 @@ class ParamDiscovery:
                         proxy = self.proxy_manager.get_proxy()
                         await asyncio.sleep(delay)
                     elif resp.status in (301, 302, 403):
+                        delay = 15 * (attempt + 1)
                         logger.warning(
                             "Discovery: HTTP %d, switching proxy (attempt %d/3)",
                             resp.status, attempt + 1,
                         )
                         self.proxy_manager.force_rotate()
                         proxy = self.proxy_manager.get_proxy()
-                        await asyncio.sleep(10)
+                        await asyncio.sleep(delay)
                     else:
                         logger.warning(
                             "Discovery: HTTP %d from %s", resp.status, url
@@ -85,10 +79,10 @@ class ParamDiscovery:
                         return None
             except asyncio.TimeoutError:
                 logger.warning("Discovery: timeout attempt %d for %s", attempt + 1, url)
-                await asyncio.sleep(10)
+                await asyncio.sleep(15)
             except aiohttp.ClientError as e:
                 logger.warning("Discovery: client error attempt %d: %s", attempt + 1, e)
-                await asyncio.sleep(10)
+                await asyncio.sleep(15)
 
         return None
 
@@ -98,13 +92,18 @@ class ParamDiscovery:
 
         for attempt in range(3):
             try:
+                headers = _random_headers()
+                # Web pages need a browser-like Accept header
+                headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                headers["Referer"] = "https://www.avito.ru/"
                 async with session.get(
-                    url, params=params, proxy=proxy, allow_redirects=False
+                    url, params=params, proxy=proxy,
+                    headers=headers, allow_redirects=False,
                 ) as resp:
                     if resp.status == 200:
                         return await resp.text()
                     elif resp.status in (301, 302, 403, 429):
-                        delay = 15 * (attempt + 1) if resp.status == 429 else 10
+                        delay = 20 * (attempt + 1) if resp.status == 429 else 15 * (attempt + 1)
                         self.proxy_manager.force_rotate()
                         proxy = self.proxy_manager.get_proxy()
                         await asyncio.sleep(delay)
@@ -112,7 +111,7 @@ class ParamDiscovery:
                         return None
             except (asyncio.TimeoutError, aiohttp.ClientError) as e:
                 logger.warning("Discovery: text request error attempt %d: %s", attempt + 1, e)
-                await asyncio.sleep(10)
+                await asyncio.sleep(15)
 
         return None
 
@@ -276,7 +275,7 @@ class ParamDiscovery:
             )
             return result
 
-        await asyncio.sleep(5)
+        await asyncio.sleep(random.uniform(8, 12))
 
         # Method B: Web page parsing
         result = await self.discover_via_web(model_name)
@@ -323,7 +322,7 @@ class ParamDiscovery:
         result = await self.discover_params(model_name)
 
         if result.get("category_id") and not result.get("error"):
-            await asyncio.sleep(2)
+            await asyncio.sleep(random.uniform(4, 7))
             verified = await self.verify_params(
                 result["category_id"], result.get("params", {})
             )
@@ -340,7 +339,7 @@ class ParamDiscovery:
     async def discover_batch(
         self,
         models: list[str],
-        delay: float = 3.0,
+        delay: float = 8.0,
         progress_callback: Any = None,
     ) -> dict[str, dict]:
         """Discover params for a batch of models.

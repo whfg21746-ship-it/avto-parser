@@ -26,17 +26,26 @@ def _extract_price(raw: Any) -> int:
             return 0
     return 0
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Mobile Safari/537.36"
-    ),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8",
-    "Referer": "https://m.avito.ru/",
-}
+_USER_AGENTS = [
+    "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 13; SM-A546B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 14; 2201116SG) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/131.0.6778.73 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 13; M2101K6G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 14; RMX3085) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+]
+
+
+def _random_headers() -> dict[str, str]:
+    return {
+        "User-Agent": random.choice(_USER_AGENTS),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8",
+        "Referer": "https://m.avito.ru/",
+    }
 
 ITEMS_ENDPOINT = "https://m.avito.ru/api/9/items"
 ITEM_DETAIL_ENDPOINT = "https://m.avito.ru/api/15/items/{ad_id}"
@@ -50,8 +59,9 @@ class AvitoAPI:
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             timeout = aiohttp.ClientTimeout(total=30)
+            jar = aiohttp.CookieJar()
             self._session = aiohttp.ClientSession(
-                headers=HEADERS, timeout=timeout
+                timeout=timeout, cookie_jar=jar
             )
         return self._session
 
@@ -65,13 +75,15 @@ class AvitoAPI:
 
         for attempt in range(3):
             try:
+                headers = _random_headers()
                 async with session.get(
-                    url, params=params, proxy=proxy, allow_redirects=False
+                    url, params=params, proxy=proxy,
+                    headers=headers, allow_redirects=False,
                 ) as resp:
                     if resp.status == 200:
                         return await resp.json(content_type=None)
                     elif resp.status == 429:
-                        delay = 15 * (attempt + 1)
+                        delay = 20 * (attempt + 1)
                         logger.warning(
                             "HTTP 429 rate limited, pausing %ds (attempt %d/3)",
                             delay, attempt + 1,
@@ -80,13 +92,14 @@ class AvitoAPI:
                         proxy = self.proxy_manager.get_proxy()
                         await asyncio.sleep(delay)
                     elif resp.status in (301, 302, 403):
+                        delay = 15 * (attempt + 1)
                         logger.warning(
                             "HTTP %d blocked, switching proxy (attempt %d/3)",
                             resp.status, attempt + 1,
                         )
                         self.proxy_manager.force_rotate()
                         proxy = self.proxy_manager.get_proxy()
-                        await asyncio.sleep(10)
+                        await asyncio.sleep(delay)
                     else:
                         logger.error(
                             "HTTP %d from %s", resp.status, url
@@ -94,12 +107,12 @@ class AvitoAPI:
                         return None
             except asyncio.TimeoutError:
                 logger.warning("Timeout on attempt %d for %s", attempt + 1, url)
-                await asyncio.sleep(10)
+                await asyncio.sleep(15)
             except aiohttp.ClientError as e:
                 logger.warning(
                     "Client error on attempt %d: %s", attempt + 1, e
                 )
-                await asyncio.sleep(10)
+                await asyncio.sleep(15)
 
         logger.error("All retries exhausted for %s", url)
         return None
@@ -197,4 +210,4 @@ class AvitoAPI:
 
     async def delay(self) -> None:
         """Random delay between requests."""
-        await asyncio.sleep(random.uniform(2.0, 4.0))
+        await asyncio.sleep(random.uniform(4.0, 8.0))

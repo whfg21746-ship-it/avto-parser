@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import random
 import sys
 
 from aiogram import Bot, Dispatcher
@@ -91,7 +92,7 @@ async def auto_discover_missing_params() -> None:
                 logger.warning("Failed to discover params for '%s' (%d/%d)", query, i + 1, len(query_map))
 
             if i < len(query_map) - 1:
-                await asyncio.sleep(3)
+                await asyncio.sleep(random.uniform(8, 15))
 
     except Exception as e:
         logger.error("Auto-discovery error: %s", e)
