@@ -112,12 +112,6 @@ async def main() -> None:
     # Initialize database
     await init_db()
 
-    # Auto-discover missing params on startup
-    try:
-        await auto_discover_missing_params()
-    except Exception as e:
-        logger.error("Startup param discovery failed: %s", e)
-
     bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
@@ -144,11 +138,21 @@ async def main() -> None:
     scheduler.start()
     logger.info("Scheduler started with interval %d seconds", interval)
 
+    # Run auto-discovery in background so it doesn't block Telegram polling
+    async def _bg_discovery() -> None:
+        try:
+            await auto_discover_missing_params()
+        except Exception as e:
+            logger.error("Startup param discovery failed: %s", e)
+
+    discovery_task = asyncio.create_task(_bg_discovery())
+
     # aiogram 3.x handles SIGINT/SIGTERM gracefully on its own
     try:
         logger.info("Bot starting...")
         await dp.start_polling(bot, close_bot_session=False)
     finally:
+        discovery_task.cancel()
         scheduler.shutdown(wait=False)
         await bot.session.close()
         logger.info("Bot stopped")
