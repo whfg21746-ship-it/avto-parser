@@ -24,3 +24,7 @@ class SettingsFSM(StatesGroup):
     entering_interval = State()
     entering_proxy = State()
     entering_max_seller = State()
+
+
+class DiscoveryFSM(StatesGroup):
+    running = State()

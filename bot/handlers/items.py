@@ -5,6 +5,7 @@ from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
+import config
 from bot.keyboards.menus import (
     ITEMS_PER_PAGE,
     back_main_keyboard,
@@ -30,8 +31,11 @@ from db.models import (
     get_items_by_category,
     get_items_count_by_category,
     get_setting,
+    update_category_avito_id,
     update_item_field,
 )
+from parser.param_discovery import ParamDiscovery
+from parser.proxy_manager import ProxyManager
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -326,26 +330,50 @@ async def item_name_entered(message: Message, state: FSMContext) -> None:
         await message.answer("Название не может быть пустым. Попробуй снова:")
         return
     await state.update_data(item_name=name)
-    await state.set_state(AddItemFSM.entering_avito_params)
-    await message.answer(
-        "Введи параметры фильтра Avito (JSON):\n"
-        'Пример: {"params[110012]": "123456"}\n\n'
-        'Или отправь "skip" чтобы использовать текстовый поиск.'
-    )
 
+    # Auto-discover Avito params
+    status_msg = await message.answer("🔍 Ищу параметры Avito для этого товара...")
 
-@router.message(AddItemFSM.entering_avito_params)
-async def avito_params_entered(message: Message, state: FSMContext) -> None:
-    text = message.text.strip()
-    if text.lower() == "skip":
-        await state.update_data(avito_params="{}")
+    proxy_raw = await get_setting("proxy_list")
+    try:
+        proxy_list = json.loads(proxy_raw) if proxy_raw else []
+    except json.JSONDecodeError:
+        proxy_list = []
+    if not proxy_list:
+        proxy_list = config.PROXY_LIST
+
+    proxy_manager = ProxyManager(proxy_list)
+    discovery = ParamDiscovery(proxy_manager)
+
+    try:
+        result = await discovery.discover_and_verify(name)
+    except Exception as e:
+        logger.error("Discovery error for %s: %s", name, e)
+        result = {"category_id": None, "params": {}, "error": str(e)}
+    finally:
+        await discovery.close()
+
+    if result.get("category_id") and not result.get("error"):
+        params_json = json.dumps(result.get("params", {}))
+        await state.update_data(
+            avito_params=params_json,
+            discovered_category_id=result["category_id"],
+        )
+        verified = result.get("verified", False)
+        v_text = " (проверено)" if verified else ""
+        await status_msg.edit_text(
+            f"\u2705 Параметры найдены{v_text}!\n"
+            f"categoryId: {result['category_id']}\n"
+            f"Фильтры: {len(result.get('params', {}))} шт.\n"
+            f"Метод: {result.get('discovered_via', '?')}"
+        )
     else:
-        try:
-            json.loads(text)
-            await state.update_data(avito_params=text)
-        except json.JSONDecodeError:
-            await message.answer('Некорректный JSON. Попробуй снова или отправь "skip":')
-            return
+        await state.update_data(avito_params="{}")
+        await status_msg.edit_text(
+            "\u26a0\ufe0f Параметры не найдены автоматически.\n"
+            "Будет использован текстовый поиск."
+        )
+
     await state.set_state(AddItemFSM.entering_threshold)
     await message.answer("Введи пороговую цену (макс. цена покупки в \u20bd):")
 
@@ -396,6 +424,12 @@ async def confirm_add_item(callback: CallbackQuery, state: FSMContext) -> None:
         search_query=data["item_name"],
         avito_params=data.get("avito_params", "{}"),
     )
+
+    # Update category's avito_category_id if we discovered one
+    discovered_cat_id = data.get("discovered_category_id")
+    if discovered_cat_id:
+        await update_category_avito_id(data["category_id"], discovered_cat_id)
+
     await state.clear()
     await callback.message.edit_text("\u2705 Товар добавлен!")
     await callback.answer()

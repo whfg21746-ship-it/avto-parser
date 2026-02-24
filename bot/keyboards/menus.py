@@ -186,6 +186,10 @@ def settings_keyboard() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="👤 Фильтр продавцов", callback_data="setting_max_seller"),
         ],
+        [
+            InlineKeyboardButton(text="🔍 Найти параметры", callback_data="discover_params"),
+            InlineKeyboardButton(text="🔄 Обновить все", callback_data="refresh_params"),
+        ],
         [InlineKeyboardButton(text="\u2b05\ufe0f Назад", callback_data="back_main")],
     ])
 

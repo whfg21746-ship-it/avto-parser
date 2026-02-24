@@ -282,3 +282,45 @@ async def get_items_count_by_category(category_id: int) -> int:
         return row[0]
     finally:
         await db.close()
+
+
+async def get_items_missing_params() -> list[dict]:
+    """Get items with empty/placeholder avito_params."""
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT i.*, c.name as category_name, c.avito_category_id "
+            "FROM items i LEFT JOIN categories c ON i.category_id = c.id "
+            "WHERE i.avito_params IS NULL OR i.avito_params = '{}' OR i.avito_params = '' "
+            "ORDER BY i.name"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+async def update_item_params(item_id: int, avito_params: str) -> None:
+    """Update avito_params for a specific item."""
+    db = await get_db()
+    try:
+        await db.execute(
+            "UPDATE items SET avito_params = ? WHERE id = ?",
+            (avito_params, item_id),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def update_category_avito_id(category_id: int, avito_category_id: int) -> None:
+    """Update avito_category_id for a category."""
+    db = await get_db()
+    try:
+        await db.execute(
+            "UPDATE categories SET avito_category_id = ? WHERE id = ?",
+            (avito_category_id, category_id),
+        )
+        await db.commit()
+    finally:
+        await db.close()
