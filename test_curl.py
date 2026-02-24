@@ -1,10 +1,35 @@
 import asyncio
 import re
-import json
-from urllib.parse import unquote
 from curl_cffi.requests import AsyncSession
 
 PROXY = "http://cmdkdzgdyfbkpzc226887-country-RU-package-mobile:uzoiutnqjy@eum.proxydoe.com:8000"
+OLD_KEY = "af0deccbgcgidddjgnvljitntccdduijhdinfgjgfjir"
+
+PARAMS = {"query": "iphone 15", "locationId": 621540, "limit": 3, "sort": "date"}
+JSON_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "ru-RU,ru;q=0.9",
+    "Referer": "https://www.avito.ru/all?q=iphone+15",
+    "Origin": "https://www.avito.ru",
+}
+
+
+async def try_url(s, label, url, params=None, extra_headers=None):
+    """Пробуем один endpoint."""
+    headers = {**JSON_HEADERS}
+    if extra_headers:
+        headers.update(extra_headers)
+    try:
+        r = await s.get(url, params=params, headers=headers)
+        body = r.text[:200]
+        has_items = '"items"' in r.text or '"result"' in r.text
+        tag = "HAS DATA!" if has_items and r.status_code == 200 else ""
+        print(f"  {label}: {r.status_code} {tag} {body}")
+        if has_items and r.status_code == 200:
+            return True
+    except Exception as e:
+        print(f"  {label}: ERROR {str(e)[:80]}")
+    return False
 
 
 async def test():
@@ -14,94 +39,96 @@ async def test():
         timeout=30,
     )
 
-    await s.get("https://m.avito.ru/", headers={"Accept-Language": "ru-RU,ru;q=0.9"})
-    await asyncio.sleep(2)
+    # Прогрев
+    print("=== Прогрев ===")
+    r = await s.get("https://www.avito.ru/", headers={"Accept-Language": "ru-RU,ru;q=0.9"})
+    print(f"Warmup: {r.status_code}")
+    await asyncio.sleep(3)
 
-    print("=== Загрузка страницы ===")
-    r = await s.get(
-        "https://www.avito.ru/all?q=iphone+15",
-        headers={
-            "Accept": "text/html,application/xhtml+xml",
-            "Accept-Language": "ru-RU,ru;q=0.9",
-        },
-    )
-    print(f"Status: {r.status_code}, Length: {len(r.text)}")
-    page = r.text
+    # 1. Mobile API v11-v20 с ключом
+    print("\n=== Mobile API с ключом (по одному, с паузами) ===")
+    for ver in [11, 12, 13, 14, 15, 16, 17, 18, 19, 20]:
+        url = f"https://m.avito.ru/api/{ver}/items"
+        found = await try_url(s, f"m.avito api/{ver}+key", url, {**PARAMS, "key": OLD_KEY})
+        if found:
+            break
+        await asyncio.sleep(4)
 
-    # 1. Ищем data-marker атрибуты (Avito использует их)
-    print("\n=== data-marker атрибуты ===")
-    markers = re.findall(r'data-marker="([^"]+)"', page)
-    unique_markers = sorted(set(markers))
-    print(f"Found {len(markers)} total, {len(unique_markers)} unique:")
-    for m in unique_markers[:30]:
-        count = markers.count(m)
-        print(f"  {m}: {count}")
+    await asyncio.sleep(5)
 
-    # 2. Ищем ссылки на объявления
-    print("\n=== Ссылки на объявления ===")
-    ad_links = re.findall(r'href="(/[^"]*?)"\s[^>]*data-marker="item-title"', page)
-    if not ad_links:
-        ad_links = re.findall(r'data-marker="item-title"[^>]*href="(/[^"]*?)"', page)
-    if not ad_links:
-        # Более общий паттерн — ссылки с ID объявления
-        ad_links = re.findall(r'href="(/[\w/-]+_(\d{8,}))"', page)
-    print(f"Found {len(ad_links)} ad links:")
-    for link in ad_links[:5]:
-        print(f"  {link}")
+    # 2. Mobile API v11-v20 без ключа
+    print("\n=== Mobile API без ключа ===")
+    for ver in [11, 12, 13, 14]:
+        url = f"https://m.avito.ru/api/{ver}/items"
+        found = await try_url(s, f"m.avito api/{ver} nokey", url, PARAMS)
+        if found:
+            break
+        await asyncio.sleep(4)
 
-    # 3. Ищем item контейнеры
-    print("\n=== Item контейнеры ===")
-    item_divs = re.findall(r'data-marker="item\b([^"]*)"', page)
-    print(f"data-marker='item*': {len(item_divs)} matches")
-    for m in set(item_divs)[:10]:
-        print(f"  item{m}: {item_divs.count(m)}")
+    await asyncio.sleep(5)
 
-    # 4. Ищем itemId / data-item-id
-    print("\n=== Item IDs ===")
-    item_ids = re.findall(r'data-item-id="(\d+)"', page)
-    if not item_ids:
-        item_ids = re.findall(r'data-id="(\d+)"', page)
-    if not item_ids:
-        item_ids = re.findall(r'"itemId"\s*:\s*"?(\d+)"?', page)
-    print(f"Found {len(item_ids)} item IDs:")
-    for iid in item_ids[:5]:
-        print(f"  {iid}")
+    # 3. Web API endpoints (www.avito.ru)
+    print("\n=== Web API endpoints ===")
+    web_endpoints = [
+        "/web/1/items",
+        "/web/2/items",
+        "/web/1/catalog",
+        "/web/1/search",
+        "/api/1/items",
+        "/api/9/items",
+        "/api/search",
+        "/graphql",
+    ]
+    for ep in web_endpoints:
+        url = f"https://www.avito.ru{ep}"
+        found = await try_url(s, f"www{ep}", url, PARAMS)
+        if found:
+            break
+        await asyncio.sleep(3)
 
-    # 5. Ищем цены в HTML
-    print("\n=== Цены в HTML ===")
-    # Avito часто использует meta content для цен
-    prices_meta = re.findall(r'content="(\d[\d\s]*)"[^>]*itemprop="price"', page)
-    if not prices_meta:
-        prices_meta = re.findall(r'itemprop="price"[^>]*content="(\d[\d\s]*)"', page)
-    # Также ищем в тексте
-    prices_text = re.findall(r'>(\d{1,3}(?:\s\d{3})*)\s*₽<', page)
-    if not prices_text:
-        prices_text = re.findall(r'(\d{1,3}(?:[\s\xa0]\d{3})+)\s*₽', page)
-    print(f"Meta prices: {prices_meta[:5]}")
-    print(f"Text prices: {prices_text[:5]}")
+    await asyncio.sleep(3)
 
-    # 6. Пробуем вытащить конкретное объявление из HTML
-    print("\n=== Пример объявления (raw HTML) ===")
-    # Ищем блок с data-marker="item"
-    item_block = re.search(r'data-marker="item"[^>]*>(.*?)</div>\s*</div>\s*</div>', page, re.DOTALL)
-    if item_block:
-        block = item_block.group(0)[:1000]
-        print(block)
-    else:
-        # Ищем любой блок с "item" в marker
-        item_block = re.search(r'(data-marker="item[^"]*"[^>]*>)', page)
-        if item_block:
-            # Показываем окружающий контекст
-            start = item_block.start()
-            print(f"Context around first item marker:")
-            print(page[start:start + 800])
+    # 4. Попробуем BFF-стиль запрос
+    print("\n=== BFF / internal endpoints ===")
+    bff_urls = [
+        "https://www.avito.ru/web/1/catalog/items",
+        "https://www.avito.ru/web/1/main/items",
+        "https://www.avito.ru/web/2/catalog/items",
+        "https://socket.avito.ru/api/search",
+        "https://bff.avito.ru/api/1/items",
+    ]
+    for url in bff_urls:
+        found = await try_url(s, url.split("//")[1][:50], url, PARAMS)
+        if found:
+            break
+        await asyncio.sleep(3)
 
-    # 7. Смотрим структуру крупных data-* атрибутов
-    print("\n=== Крупные data-* атрибуты ===")
-    for match in re.finditer(r'data-([\w-]+)="([^"]{200,})"', page):
-        name = match.group(1)
-        value = match.group(2)[:200]
-        print(f"  data-{name} ({len(match.group(2))} chars): {value}...")
+    # 5. Попробуем JS bundle для поиска endpoint
+    print("\n=== Поиск endpoint в JS бандлах ===")
+    r = await s.get("https://www.avito.ru/all?q=iphone",
+                     headers={"Accept": "text/html", "Accept-Language": "ru-RU,ru;q=0.9"})
+    js_urls = re.findall(r'src="(https?://[^"]*\.js[^"]*)"', r.text)
+    print(f"Found {len(js_urls)} JS files")
+    # Берём самый большой (main bundle)
+    for js_url in js_urls[:3]:
+        print(f"\n  Checking: {js_url[-60:]}")
+        try:
+            jr = await s.get(js_url)
+            js_code = jr.text
+            # Ищем API endpoints
+            apis = set()
+            for m in re.finditer(r'["\'](/api/\d+/\w+)["\']', js_code):
+                apis.add(m.group(1))
+            for m in re.finditer(r'["\'](/web/\d+/\w+)["\']', js_code):
+                apis.add(m.group(1))
+            for m in re.finditer(r'["\']([^"\']*items[^"\']*api[^"\']*)["\']', js_code):
+                if len(m.group(1)) < 80:
+                    apis.add(m.group(1))
+            if apis:
+                print(f"    APIs found: {sorted(apis)}")
+        except Exception as e:
+            print(f"    Error: {str(e)[:60]}")
+        await asyncio.sleep(2)
 
     s.close()
 
