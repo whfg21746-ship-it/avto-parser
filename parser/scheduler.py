@@ -32,7 +32,7 @@ def _format_alert(item: dict, ad_data: dict, verdict: dict) -> str:
     score = verdict.get("score", "?")
     comment = verdict.get("comment", "")
     profit = verdict.get("estimated_profit", 0)
-    sell_price = verdict.get("estimated_sell_price", item["market_price"])
+    sell_price = verdict.get("estimated_sell_price", 0)
     defects = verdict.get("defects", [])
     red_flags = verdict.get("red_flags", [])
 
@@ -50,17 +50,18 @@ def _format_alert(item: dict, ad_data: dict, verdict: dict) -> str:
     if not red_flags:
         lines.append(f"\U0001f4f1 {item['name']}")
 
-    lines.extend([
-        f"\U0001f4b0 {ad_price:,}\u20bd \u2192 продажа ~{sell_price:,}\u20bd",
-        f"\U0001f4cd {city}",
-        f"\U0001f4b5 Профит: ~{profit:,}\u20bd",
-    ])
+    lines.append(f"\U0001f4b0 Цена: {ad_price:,}\u20bd")
+    lines.append(f"\U0001f4cd {city}")
 
     lines.extend([
         "",
         f"\U0001f916 Оценка: {score}/10 \u2014 {rec_ru}",
-        comment,
     ])
+
+    if sell_price:
+        lines.append(f"Перепродажа: ~{sell_price:,}\u20bd | Профит: ~{profit:,}\u20bd")
+
+    lines.append(comment)
 
     if defects:
         defects_str = ", ".join(defects)
@@ -69,8 +70,6 @@ def _format_alert(item: dict, ad_data: dict, verdict: dict) -> str:
     if red_flags:
         flags_str = ", ".join(red_flags)
         lines.extend(["", f"\U0001f6a9 Красные флаги: {flags_str}"])
-
-    lines.extend(["", f"\U0001f517 {url}"])
 
     return "\n".join(lines)
 

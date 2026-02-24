@@ -81,8 +81,9 @@ SYSTEM_PROMPT = """Ты — опытный перекупщик товаров �
 """
 
 USER_PROMPT_TEMPLATE = """Товар: {item_name}
-Наш порог покупки: {threshold_price}₽
-Наша оценка перепродажи: {market_price}₽
+Максимальная цена покупки: {threshold_price}₽
+
+{custom_instructions}
 
 Объявление на Авито:
 Заголовок: {ad_title}
@@ -95,8 +96,8 @@ USER_PROMPT_TEMPLATE = """Товар: {item_name}
 ---
 
 Характеристики: {ad_params}
-{custom_instructions}
-Дай экспертную оценку."""
+
+Дай экспертную оценку. Оцени за сколько реально перепродать и какой будет профит."""
 
 VALID_RECOMMENDATIONS = frozenset(["BUY", "CHECK", "SKIP"])
 
@@ -156,7 +157,6 @@ async def analyze_ad(item: dict, ad_data: dict) -> dict | None:
     user_prompt = USER_PROMPT_TEMPLATE.format(
         item_name=item["name"],
         threshold_price=item["threshold_price"],
-        market_price=item["market_price"],
         ad_price=ad_data.get("price", 0),
         city=ad_data.get("city", "Не указан"),
         ad_title=ad_data.get("title", ""),

@@ -60,19 +60,16 @@ def _shorten_url(url: str, max_len: int = 50) -> str:
 
 def _item_detail_text(item: dict, stats: dict) -> str:
     status = "\u2705 Активен" if item["is_active"] else "\u23f8 Выключен"
-    profit = item["market_price"] - item["threshold_price"]
     url_short = _shorten_url(item.get("avito_url", ""))
     prompt = item.get("custom_prompt")
     prompt_line = f"\U0001f916 Подсказка: \u00ab{prompt[:50]}...\u00bb\n" if prompt and len(prompt) > 50 else (f"\U0001f916 Подсказка: \u00ab{prompt}\u00bb\n" if prompt else "")
     return (
         f"\U0001f4e6 {item['name']}\n\n"
-        f"Статус: {status}\n"
         f"Категория: {item.get('category_name', 'N/A')}\n"
+        f"Порог покупки: {item['threshold_price']:,}\u20bd\n"
         f"Ссылка: {url_short}\n"
-        f"Порог: {item['threshold_price']:,}\u20bd\n"
-        f"Перепродажа: {item['market_price']:,}\u20bd\n"
-        f"Профит: ~{profit:,}\u20bd\n"
         f"{prompt_line}"
+        f"Статус: {status}\n"
         f"Найдено: {stats['total']}  |  Алертов: {stats['alerted']}"
     )
 
@@ -259,44 +256,6 @@ async def process_edit_threshold(message: Message, state: FSMContext) -> None:
     )
 
 
-# --- Edit Market Price ---
-
-@router.callback_query(F.data.startswith("item_edit_market_"))
-async def start_edit_market(callback: CallbackQuery, state: FSMContext) -> None:
-    item_id = int(callback.data.split("_")[-1])
-    item = await get_item(item_id)
-    await state.set_state(EditItemFSM.entering_market_price)
-    await state.update_data(edit_item_id=item_id)
-    current = f"{item['market_price']:,}\u20bd" if item else "?"
-    await callback.message.edit_text(
-        f"Текущая перепродажа: {current}\n\nВведи новую цену перепродажи (в \u20bd):",
-        reply_markup=back_main_keyboard(),
-    )
-    await callback.answer()
-
-
-@router.message(EditItemFSM.entering_market_price)
-async def process_edit_market(message: Message, state: FSMContext) -> None:
-    try:
-        price = int(message.text.strip().replace(" ", ""))
-    except (ValueError, AttributeError):
-        await message.answer("Некорректная цена. Введи число:")
-        return
-
-    data = await state.get_data()
-    item_id = data["edit_item_id"]
-    await update_item_field(item_id, "market_price", price)
-    await state.clear()
-
-    item = await get_item(item_id)
-    stats = await get_item_stats(item_id)
-    await message.answer(
-        f"\u2705 Цена перепродажи обновлена!\n\n" + _item_detail_text(item, stats),
-        reply_markup=item_detail_keyboard(item),
-        disable_web_page_preview=True,
-    )
-
-
 # --- Edit URL ---
 
 @router.callback_query(F.data.startswith("item_edit_url_"))
@@ -371,6 +330,7 @@ async def url_pasted(message: Message, state: FSMContext) -> None:
         return
 
     await state.update_data(avito_url=url)
+    logger.debug("URL pasted and saved to FSM: %s", url)
     await state.set_state(AddItemFSM.entering_name)
     await message.answer("Введите название товара (для отображения в боте):")
 
@@ -483,7 +443,7 @@ async def built_url_restart(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-# --- Common steps (name -> category -> threshold -> market -> confirm) ---
+# --- Common steps (name -> category -> threshold -> prompt -> confirm) ---
 
 @router.message(AddItemFSM.entering_name)
 async def item_name_entered(message: Message, state: FSMContext) -> None:
@@ -549,18 +509,6 @@ async def threshold_entered(message: Message, state: FSMContext) -> None:
         await message.answer("Некорректная цена. Введи число:")
         return
     await state.update_data(threshold_price=price)
-    await state.set_state(AddItemFSM.entering_market_price)
-    await message.answer("Введите примерную цену перепродажи в \u20bd:")
-
-
-@router.message(AddItemFSM.entering_market_price)
-async def market_price_entered(message: Message, state: FSMContext) -> None:
-    try:
-        price = int(message.text.strip().replace(" ", ""))
-    except (ValueError, AttributeError):
-        await message.answer("Некорректная цена. Введи число:")
-        return
-    await state.update_data(market_price=price)
     await state.set_state(AddItemFSM.choosing_custom_prompt)
     await message.answer(
         "Хотите добавить подсказку для ИИ для этого товара?\n"
@@ -605,7 +553,7 @@ async def item_prompt_entered(message: Message, state: FSMContext) -> None:
 
 
 async def _show_item_confirm(msg, data: dict, edit_message: bool = False) -> None:
-    profit = data["market_price"] - data["threshold_price"]
+    logger.debug("FSM state data at confirmation: %s", data)
     url_short = _shorten_url(data["avito_url"])
     prompt = data.get("custom_prompt")
     prompt_line = f"\U0001f916 Подсказка: \u00ab{prompt}\u00bb\n" if prompt else ""
@@ -614,9 +562,7 @@ async def _show_item_confirm(msg, data: dict, edit_message: bool = False) -> Non
         f"Название: {data['item_name']}\n"
         f"Категория: {data['category_name']}\n"
         f"Ссылка: {url_short}\n"
-        f"Порог: {data['threshold_price']:,}\u20bd\n"
-        f"Перепродажа: ~{data['market_price']:,}\u20bd\n"
-        f"Профит: ~{profit:,}\u20bd\n"
+        f"Порог покупки: {data['threshold_price']:,}\u20bd\n"
         f"{prompt_line}"
     )
     if edit_message:
@@ -628,12 +574,12 @@ async def _show_item_confirm(msg, data: dict, edit_message: bool = False) -> Non
 @router.callback_query(F.data == "item_confirm", AddItemFSM.confirming)
 async def confirm_add_item(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
+    logger.debug("FSM state data at confirm_add_item: %s", data)
     await add_item(
         category_id=data["category_id"],
         name=data["item_name"],
         avito_url=data["avito_url"],
         threshold_price=data["threshold_price"],
-        market_price=data["market_price"],
         custom_prompt=data.get("custom_prompt"),
     )
 

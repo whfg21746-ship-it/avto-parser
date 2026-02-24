@@ -16,7 +16,6 @@ class AddItemFSM(StatesGroup):
     choosing_category = State()
     entering_new_category = State()
     entering_threshold = State()
-    entering_market_price = State()
     choosing_custom_prompt = State()
     entering_custom_prompt = State()
     confirming = State()
@@ -24,7 +23,6 @@ class AddItemFSM(StatesGroup):
 
 class EditItemFSM(StatesGroup):
     entering_threshold = State()
-    entering_market_price = State()
     entering_url = State()
     entering_custom_prompt = State()
 

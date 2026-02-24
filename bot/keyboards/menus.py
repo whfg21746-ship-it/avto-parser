@@ -309,19 +309,11 @@ def item_detail_keyboard(item: dict) -> InlineKeyboardMarkup:
                 callback_data=f"item_edit_threshold_{item['id']}",
             ),
             InlineKeyboardButton(
-                text="\u270f\ufe0f Перепродажа",
-                callback_data=f"item_edit_market_{item['id']}",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                text="\U0001f517 Изменить ссылку",
+                text="\U0001f517 Ссылка",
                 callback_data=f"item_edit_url_{item['id']}",
             ),
-        ],
-        [
             InlineKeyboardButton(
-                text="\U0001f916 Подсказка для ИИ",
+                text="\U0001f916 Подсказка",
                 callback_data=f"item_edit_prompt_{item['id']}",
             ),
         ],

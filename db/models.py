@@ -204,7 +204,6 @@ async def add_item(
     name: str,
     avito_url: str,
     threshold_price: int,
-    market_price: int,
     model_pattern: str | None = None,
     custom_prompt: str | None = None,
 ) -> int:
@@ -212,10 +211,10 @@ async def add_item(
     try:
         cursor = await db.execute(
             "INSERT INTO items (category_id, name, avito_url, model_pattern, "
-            "threshold_price, market_price, custom_prompt) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "threshold_price, custom_prompt) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             (category_id, name, avito_url, model_pattern,
-             threshold_price, market_price, custom_prompt),
+             threshold_price, custom_prompt),
         )
         await db.commit()
         return cursor.lastrowid
@@ -224,7 +223,7 @@ async def add_item(
 
 
 async def update_item_field(item_id: int, field: str, value: Any) -> None:
-    allowed = {"threshold_price", "market_price", "is_active", "name",
+    allowed = {"threshold_price", "is_active", "name",
                "model_pattern", "avito_url", "category_id", "custom_prompt"}
     if field not in allowed:
         raise ValueError(f"Field {field} is not allowed for update")

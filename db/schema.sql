@@ -21,7 +21,6 @@ CREATE TABLE IF NOT EXISTS items (
     avito_url TEXT NOT NULL,
     model_pattern TEXT,
     threshold_price INTEGER NOT NULL,
-    market_price INTEGER NOT NULL,
     custom_prompt TEXT DEFAULT NULL,
     is_active BOOLEAN DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

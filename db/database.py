@@ -62,6 +62,36 @@ async def init_db() -> None:
                     f"ALTER TABLE {table} ADD COLUMN custom_prompt TEXT DEFAULT NULL"
                 )
                 logger.info("Added custom_prompt column to %s", table)
+
+        # Migrate: remove market_price column if present (recreate table)
+        cursor = await db.execute("PRAGMA table_info(items)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "market_price" in columns:
+            logger.info("Removing market_price column from items table...")
+            await db.execute(
+                "CREATE TABLE items_new ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "category_id INTEGER REFERENCES categories(id) ON DELETE CASCADE, "
+                "name TEXT NOT NULL, "
+                "avito_url TEXT NOT NULL, "
+                "model_pattern TEXT, "
+                "threshold_price INTEGER NOT NULL, "
+                "custom_prompt TEXT DEFAULT NULL, "
+                "is_active BOOLEAN DEFAULT 1, "
+                "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            await db.execute(
+                "INSERT INTO items_new "
+                "(id, category_id, name, avito_url, model_pattern, "
+                "threshold_price, custom_prompt, is_active, created_at) "
+                "SELECT id, category_id, name, avito_url, model_pattern, "
+                "threshold_price, custom_prompt, is_active, created_at "
+                "FROM items"
+            )
+            await db.execute("DROP TABLE items")
+            await db.execute("ALTER TABLE items_new RENAME TO items")
+            logger.info("Removed market_price column from items table")
+
         await db.commit()
 
         # Seed default settings if table is empty
