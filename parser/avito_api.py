@@ -3,12 +3,21 @@ import logging
 import random
 from typing import Any
 
-import aiohttp
+from curl_cffi.requests import AsyncSession
 
 import config
 from parser.proxy_manager import ProxyManager
 
 logger = logging.getLogger(__name__)
+
+BROWSER_PROFILES = [
+    "chrome131",
+    "chrome133a",
+    "chrome136",
+    "chrome142",
+    "safari18_0",
+    "safari18_2",
+]
 
 
 def _extract_price(raw: Any) -> int:
@@ -25,26 +34,6 @@ def _extract_price(raw: Any) -> int:
             return 0
     return 0
 
-_USER_AGENTS = [
-    "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; SM-A546B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 14; 2201116SG) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/131.0.6778.73 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (Linux; Android 13; M2101K6G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 14; RMX3085) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
-]
-
-
-def _random_headers() -> dict[str, str]:
-    return {
-        "User-Agent": random.choice(_USER_AGENTS),
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8",
-        "Referer": "https://m.avito.ru/",
-    }
 
 ITEMS_ENDPOINT = "https://m.avito.ru/api/9/items"
 ITEM_DETAIL_ENDPOINT = "https://m.avito.ru/api/15/items/{ad_id}"
@@ -53,64 +42,105 @@ ITEM_DETAIL_ENDPOINT = "https://m.avito.ru/api/15/items/{ad_id}"
 class AvitoAPI:
     def __init__(self, proxy_manager: ProxyManager) -> None:
         self.proxy_manager = proxy_manager
-        self._session: aiohttp.ClientSession | None = None
+        self._session: AsyncSession | None = None
+        self._current_profile: str | None = None
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            timeout = aiohttp.ClientTimeout(total=30)
-            jar = aiohttp.CookieJar()
-            self._session = aiohttp.ClientSession(
-                timeout=timeout, cookie_jar=jar
+    async def _ensure_session(self) -> AsyncSession:
+        """Create or recreate session with a fresh browser fingerprint."""
+        if self._session is not None:
+            try:
+                self._session.close()
+            except Exception:
+                pass
+
+        self._current_profile = random.choice(BROWSER_PROFILES)
+        proxy_url = self.proxy_manager.get_proxy()
+        proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+
+        self._session = AsyncSession(
+            impersonate=self._current_profile,
+            proxies=proxies,
+            timeout=30,
+        )
+
+        # Pre-warm: visit the main page to get cookies (like a real user)
+        try:
+            await self._session.get(
+                "https://m.avito.ru/",
+                headers={"Accept-Language": "ru-RU,ru;q=0.9"},
             )
+        except Exception:
+            pass  # best-effort
+
+        logger.debug(
+            "New session: profile=%s, proxy=%s",
+            self._current_profile,
+            proxy_url or "none",
+        )
+        return self._session
+
+    async def _get_session(self) -> AsyncSession:
+        if self._session is None:
+            return await self._ensure_session()
         return self._session
 
     async def close(self) -> None:
-        if self._session and not self._session.closed:
-            await self._session.close()
+        if self._session is not None:
+            try:
+                self._session.close()
+            except Exception:
+                pass
+            self._session = None
 
     async def _request(self, url: str, params: dict | None = None) -> dict | None:
         session = await self._get_session()
-        proxy = self.proxy_manager.get_proxy()
+
+        # Do NOT set User-Agent — curl_cffi sets it automatically to match
+        # the impersonate profile. A mismatched UA = instant block.
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8",
+            "Referer": "https://m.avito.ru/",
+        }
 
         for attempt in range(3):
             try:
-                headers = _random_headers()
-                async with session.get(
-                    url, params=params, proxy=proxy,
-                    headers=headers, allow_redirects=False,
-                ) as resp:
-                    if resp.status == 200:
-                        return await resp.json(content_type=None)
-                    elif resp.status == 429:
-                        delay = 20 * (attempt + 1)
-                        logger.warning(
-                            "HTTP 429 rate limited, pausing %ds (attempt %d/3)",
-                            delay, attempt + 1,
-                        )
-                        self.proxy_manager.force_rotate()
-                        proxy = self.proxy_manager.get_proxy()
-                        await asyncio.sleep(delay)
-                    elif resp.status in (301, 302, 403):
-                        delay = 15 * (attempt + 1)
-                        logger.warning(
-                            "HTTP %d blocked, switching proxy (attempt %d/3)",
-                            resp.status, attempt + 1,
-                        )
-                        self.proxy_manager.force_rotate()
-                        proxy = self.proxy_manager.get_proxy()
-                        await asyncio.sleep(delay)
-                    else:
-                        logger.error(
-                            "HTTP %d from %s", resp.status, url
-                        )
-                        return None
-            except asyncio.TimeoutError:
-                logger.warning("Timeout on attempt %d for %s", attempt + 1, url)
-                await asyncio.sleep(15)
-            except aiohttp.ClientError as e:
-                logger.warning(
-                    "Client error on attempt %d: %s", attempt + 1, e
+                response = await session.get(
+                    url, params=params, headers=headers,
                 )
+
+                if response.status_code == 200:
+                    return response.json()
+                elif response.status_code == 429:
+                    delay = 20 * (attempt + 1)
+                    logger.warning(
+                        "HTTP 429 rate limited, pausing %ds (attempt %d/3)",
+                        delay, attempt + 1,
+                    )
+                    # Rotate BOTH proxy AND fingerprint
+                    self.proxy_manager.force_rotate()
+                    session = await self._ensure_session()
+                    await asyncio.sleep(delay)
+                elif response.status_code in (301, 302, 403):
+                    delay = 15 * (attempt + 1)
+                    logger.warning(
+                        "HTTP %d blocked, rotating session (attempt %d/3)",
+                        response.status_code, attempt + 1,
+                    )
+                    self.proxy_manager.force_rotate()
+                    session = await self._ensure_session()
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(
+                        "HTTP %d from %s", response.status_code, url
+                    )
+                    return None
+            except Exception as e:
+                logger.warning(
+                    "Request error on attempt %d: %s", attempt + 1, e,
+                )
+                self.proxy_manager.force_rotate()
+                session = await self._ensure_session()
                 await asyncio.sleep(15)
 
         logger.error("All retries exhausted for %s", url)
