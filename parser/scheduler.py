@@ -136,9 +136,11 @@ async def run_scan_cycle(bot: Bot) -> None:
                 total_new += 1
 
                 # Step 2: Match listing to a specific item (model + storage)
+                raw_item = listing.get("_raw", {})
+                listing_params = api.extract_listing_params(raw_item)
                 matched_item = match_listing_to_item(
                     listing["title"],
-                    listing.get("params"),
+                    listing_params,
                     items,
                 )
 
@@ -152,7 +154,6 @@ async def run_scan_cycle(bot: Bot) -> None:
                     continue
 
                 # Step 4: Extract full details from search result data
-                raw_item = listing.get("_raw", {})
                 details = api.get_item_details(ad_id, raw_item=raw_item)
 
                 if not details:
@@ -166,12 +167,13 @@ async def run_scan_cycle(bot: Bot) -> None:
                     )
                     continue
 
-                # Seller filter
+                # Seller filter (use closed items count from search results)
                 max_seller = matched_item.get("max_seller_items", config.MAX_SELLER_ITEMS)
-                if details.get("seller_items_count", 0) > max_seller:
+                seller_closed = details.get("seller_closed_items", 0)
+                if seller_closed > max_seller:
                     logger.debug(
-                        "Skipping %s: seller has %d items (max %d)",
-                        ad_id, details["seller_items_count"], max_seller,
+                        "Skipping %s: seller has %d closed items (max %d)",
+                        ad_id, seller_closed, max_seller,
                     )
                     await save_seen_ad(
                         ad_id=ad_id,

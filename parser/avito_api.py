@@ -482,6 +482,33 @@ class AvitoAPI:
 
         return ", ".join(parts) if parts else "N/A"
 
+    @staticmethod
+    def extract_listing_params(raw_item: dict) -> dict[str, str]:
+        """Extract key-value params from IVA components for model matching.
+
+        Returns a dict suitable for match_listing_to_item() / extract_storage_from_listing().
+        """
+        params: dict[str, str] = {}
+        iva = raw_item.get("iva")
+        if not isinstance(iva, dict):
+            return params
+
+        for steps in iva.values():
+            if not isinstance(steps, list):
+                continue
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                cd = step.get("componentData", {})
+                if not isinstance(cd, dict):
+                    continue
+                payload = cd.get("payload", {})
+                if isinstance(payload, dict):
+                    text = payload.get("text", "")
+                    if text and isinstance(text, str) and len(text) < 200:
+                        params[f"iva_{len(params)}"] = text
+        return params
+
     def get_item_details(self, ad_id: str, raw_item: dict | None = None, **kwargs: Any) -> dict:
         """Extract full details from a search result item.
 
