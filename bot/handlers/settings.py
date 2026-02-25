@@ -26,8 +26,13 @@ async def show_settings(callback: CallbackQuery) -> None:
     except json.JSONDecodeError:
         proxies = []
 
+    send_check = await get_setting("send_check_verdicts")
+    min_profit = await get_setting("min_profit_percent") or "0"
+
     mon_status = "\u25b6\ufe0f Включён" if monitoring == "true" else "\u23f8 Выключен"
     city_display = city if city else "Вся Россия"
+    check_status = "\u274c Выкл" if send_check == "false" else "\u2705 Вкл"
+    profit_display = f"{min_profit}%" if min_profit != "0" else "не задан"
 
     text = (
         "\u2699\ufe0f Настройки:\n\n"
@@ -35,7 +40,9 @@ async def show_settings(callback: CallbackQuery) -> None:
         f"\U0001f4e1 Мониторинг: {mon_status}\n"
         f"\u23f1 Интервал: {interval} сек\n"
         f"\U0001f464 Макс. объявлений продавца: {max_seller}\n"
-        f"\U0001f4e1 Прокси: {len(proxies)} шт."
+        f"\U0001f4e1 Прокси: {len(proxies)} шт.\n"
+        f"\U0001f50d CHECK алерты: {check_status}\n"
+        f"\U0001f4b0 Мин. профит: {profit_display}"
     )
     await callback.message.edit_text(text, reply_markup=settings_keyboard())
     await callback.answer()
@@ -266,5 +273,52 @@ async def process_max_seller(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
         f"\u2705 Макс. объявлений продавца: {val}",
+        reply_markup=back_main_keyboard(),
+    )
+
+
+# --- CHECK Verdicts Toggle ---
+
+@router.callback_query(F.data == "setting_check_verdicts")
+async def toggle_check_verdicts(callback: CallbackQuery) -> None:
+    current = await get_setting("send_check_verdicts")
+    new_value = "false" if current != "false" else "true"
+    await set_setting("send_check_verdicts", new_value)
+
+    status = "\u2705 Включены" if new_value == "true" else "\u274c Выключены"
+    await callback.answer(f"CHECK алерты: {status}")
+    await show_settings(callback)
+
+
+# --- Min Profit Percent ---
+
+@router.callback_query(F.data == "setting_min_profit")
+async def start_edit_min_profit(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(SettingsFSM.entering_min_profit)
+    current = await get_setting("min_profit_percent") or "0"
+    await callback.message.edit_text(
+        f"Текущий минимальный профит: {current}%\n\n"
+        "Введи минимальный процент профита для алерта (0 = без фильтра):",
+        reply_markup=back_main_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.message(SettingsFSM.entering_min_profit)
+async def process_min_profit(message: Message, state: FSMContext) -> None:
+    try:
+        val = int(message.text.strip())
+        if val < 0:
+            await message.answer("Процент не может быть отрицательным:")
+            return
+    except (ValueError, AttributeError):
+        await message.answer("Введи число:")
+        return
+
+    await set_setting("min_profit_percent", str(val))
+    await state.clear()
+    display = f"{val}%" if val > 0 else "не задан (все алерты)"
+    await message.answer(
+        f"\u2705 Мин. профит для алерта: {display}",
         reply_markup=back_main_keyboard(),
     )

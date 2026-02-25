@@ -264,7 +264,7 @@ def category_items_keyboard(
     rows: list[list[InlineKeyboardButton]] = []
     for item in items:
         status = "\u2705" if item["is_active"] else "\u23f8"
-        text = f"{status} {item['name']} \u2014 {item['threshold_price']:,}\u20bd"
+        text = f"{status} {item['name']}"
         if len(text) > 60:
             text = text[:57] + "..."
         rows.append([InlineKeyboardButton(
@@ -305,10 +305,6 @@ def item_detail_keyboard(item: dict) -> InlineKeyboardMarkup:
 
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(
-                text="\u270f\ufe0f Порог",
-                callback_data=f"item_edit_threshold_{item['id']}",
-            ),
             InlineKeyboardButton(
                 text="\U0001f517 Ссылка",
                 callback_data=f"item_edit_url_{item['id']}",
@@ -355,6 +351,10 @@ def settings_keyboard() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="\U0001f464 Фильтр продавцов", callback_data="setting_max_seller"),
             InlineKeyboardButton(text="\U0001f4e1 Прокси", callback_data="setting_proxy"),
+        ],
+        [
+            InlineKeyboardButton(text="\U0001f50d CHECK алерты", callback_data="setting_check_verdicts"),
+            InlineKeyboardButton(text="\U0001f4b0 Мин. профит %", callback_data="setting_min_profit"),
         ],
         [InlineKeyboardButton(text="\u2b05\ufe0f Назад", callback_data="back_main")],
     ])

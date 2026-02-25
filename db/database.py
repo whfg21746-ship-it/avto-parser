@@ -122,34 +122,35 @@ async def ensure_db_initialized() -> None:
             )
             logger.info("User %d: added custom_prompt to %s", user_id, table)
 
-    # Migrate: remove market_price column if present (recreate table)
+    # Migrate: remove deprecated columns (threshold_price, model_pattern, market_price)
+    # AI-first: no more price thresholds, AI decides profitability
     cursor = await db.execute("PRAGMA table_info(items)")
     columns = {row[1] for row in await cursor.fetchall()}
-    if "market_price" in columns:
-        logger.info("User %d: removing market_price column...", user_id)
+    deprecated_cols = {"market_price", "threshold_price", "model_pattern"}
+    if deprecated_cols & columns:
+        logger.info(
+            "User %d: removing deprecated columns %s from items",
+            user_id, deprecated_cols & columns,
+        )
         await db.execute(
             "CREATE TABLE items_new ("
             "id INTEGER PRIMARY KEY AUTOINCREMENT, "
             "category_id INTEGER REFERENCES categories(id) ON DELETE CASCADE, "
             "name TEXT NOT NULL, "
             "avito_url TEXT NOT NULL, "
-            "model_pattern TEXT, "
-            "threshold_price INTEGER NOT NULL, "
             "custom_prompt TEXT DEFAULT NULL, "
             "is_active BOOLEAN DEFAULT 1, "
             "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
         )
         await db.execute(
             "INSERT INTO items_new "
-            "(id, category_id, name, avito_url, model_pattern, "
-            "threshold_price, custom_prompt, is_active, created_at) "
-            "SELECT id, category_id, name, avito_url, model_pattern, "
-            "threshold_price, custom_prompt, is_active, created_at "
+            "(id, category_id, name, avito_url, custom_prompt, is_active, created_at) "
+            "SELECT id, category_id, name, avito_url, custom_prompt, is_active, created_at "
             "FROM items"
         )
         await db.execute("DROP TABLE items")
         await db.execute("ALTER TABLE items_new RENAME TO items")
-        logger.info("User %d: market_price column removed", user_id)
+        logger.info("User %d: deprecated columns removed from items", user_id)
 
     await db.commit()
 

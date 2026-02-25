@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT
 );
 
--- Categories (user-created)
+-- Categories (user-created, name used as key into AI category prompts)
 CREATE TABLE IF NOT EXISTS categories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -14,13 +14,12 @@ CREATE TABLE IF NOT EXISTS categories (
 );
 
 -- Items (products to monitor within a category)
+-- No threshold_price: AI decides what's profitable
 CREATE TABLE IF NOT EXISTS items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     category_id INTEGER REFERENCES categories(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     avito_url TEXT NOT NULL,
-    model_pattern TEXT,
-    threshold_price INTEGER NOT NULL,
     custom_prompt TEXT DEFAULT NULL,
     is_active BOOLEAN DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

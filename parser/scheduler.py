@@ -1,4 +1,4 @@
-"""Scan cycle orchestration with watchdog and graceful degradation."""
+"""Scan cycle orchestration with watchdog, AI-first pipeline, graceful degradation."""
 
 import asyncio
 import json
@@ -21,16 +21,11 @@ from db.models import (
 import config
 from parser.avito_api import AvitoAPI
 from parser.cookie_provider import get_cookie_provider
-from parser.filters import should_instant_reject, should_reject_model_pattern, should_reject_seller
+from parser.filters import should_instant_reject, should_reject_seller
 from parser.proxy_manager import ProxyManager
 from parser.resilience import NoHealthyProxyError, retry_async
 
 logger = logging.getLogger(__name__)
-
-RECOMMENDATION_MAP = {
-    "BUY": "КУПИТЬ",
-    "CHECK": "ПРОВЕРИТЬ ЛИЧНО",
-}
 
 # Per-user last scan timestamps for dynamic interval support
 _user_last_scan: dict[int, float] = {}
@@ -41,50 +36,51 @@ MAX_CONSECUTIVE_FAILURES = 5
 FAILURE_PAUSE_SECONDS = 300  # 5 minutes
 
 
-def _format_alert(item: dict, ad_data: dict, verdict: dict) -> str:
-    """Format the Telegram alert message."""
-    rec = verdict.get("recommendation", "CHECK")
-    rec_ru = RECOMMENDATION_MAP.get(rec, rec)
-    score = verdict.get("score", "?")
-    comment = verdict.get("comment", "")
-    profit = verdict.get("estimated_profit", 0)
-    sell_price = verdict.get("estimated_sell_price", 0)
-    defects = verdict.get("defects", [])
-    red_flags = verdict.get("red_flags", [])
+def _format_alert(listing: dict, analysis: dict) -> str:
+    """Format the new AI-first Telegram alert."""
+    verdict_emoji = {
+        "BUY": "\U0001f525 ПОКУПАТЬ",
+        "CHECK": "\U0001f50d ПРОВЕРИТЬ",
+        "SKIP": "\u23ed ПРОПУСК",
+    }
+    scam_emoji = {"low": "\U0001f7e2", "medium": "\U0001f7e1", "high": "\U0001f534"}
 
-    ad_price = ad_data.get("price", 0)
-    city = ad_data.get("city", "N/A")
+    score = analysis.get("score", "?")
+    verdict = verdict_emoji.get(analysis.get("verdict", "CHECK"), analysis.get("verdict", "?"))
+    product = analysis.get("product_identified") or listing.get("title", "?")
+    scam = scam_emoji.get(analysis.get("scam_risk", "medium"), "\U0001f7e1")
 
-    if red_flags:
-        header = f"\U0001f6a9 {item['name']} за {ad_price:,}\u20bd"
-    else:
-        header = "\U0001f525 Новая находка!"
+    profit = analysis.get("expected_profit", 0)
+    profit_pct = analysis.get("profit_percent", 0)
+    sell_price = analysis.get("estimated_sell_price", 0)
+    price = listing.get("price", 0)
+    city = listing.get("city", "?")
 
-    lines = [header, ""]
-
-    if not red_flags:
-        lines.append(f"\U0001f4f1 {item['name']}")
-
-    lines.append(f"\U0001f4b0 Цена: {ad_price:,}\u20bd")
+    lines = [f"{verdict} | {score}/10", ""]
+    lines.append(f"\U0001f4f1 {product}")
+    lines.append(f"\U0001f4b0 Цена: {price:,}\u20bd")
     lines.append(f"\U0001f4cd {city}")
-
-    lines.extend([
-        "",
-        f"\U0001f916 Оценка: {score}/10 \u2014 {rec_ru}",
-    ])
+    lines.append("")
 
     if sell_price:
-        lines.append(f"Перепродажа: ~{sell_price:,}\u20bd | Профит: ~{profit:,}\u20bd")
+        lines.append(
+            f"\U0001f4b5 Перепродажа: ~{sell_price:,}\u20bd | "
+            f"Профит: ~{profit:,}\u20bd ({profit_pct}%)"
+        )
 
-    lines.append(comment)
+    lines.append(f"{scam} Риск скама: {analysis.get('scam_risk', '?')}")
+    lines.append("")
+    lines.append(f"\U0001f4ac {analysis.get('comment', '')}")
 
-    if defects:
-        defects_str = ", ".join(defects)
-        lines.extend(["", f"\u26a0\ufe0f Замечено: {defects_str}"])
+    if analysis.get("action_advice"):
+        lines.append(f"\n\u26a1 {analysis['action_advice']}")
 
+    red_flags = analysis.get("red_flags", [])
     if red_flags:
-        flags_str = ", ".join(red_flags)
-        lines.extend(["", f"\U0001f6a9 Красные флаги: {flags_str}"])
+        flags = ", ".join(red_flags[:3])
+        lines.append(f"\n\u26a0\ufe0f Флаги: {flags}")
+
+    lines.append(f"\n\U0001f517 [Открыть объявление]({listing.get('url', '')})")
 
     return "\n".join(lines)
 
@@ -101,6 +97,7 @@ async def _send_alert(bot: Bot, chat_id: str, text: str,
                 photo=images[0],
                 caption=text[:1024],
                 reply_markup=reply_markup,
+                parse_mode="Markdown",
             )
             return
         except Exception:
@@ -111,6 +108,7 @@ async def _send_alert(bot: Bot, chat_id: str, text: str,
         text=text,
         reply_markup=reply_markup,
         disable_web_page_preview=True,
+        parse_mode="Markdown",
     )
 
 
@@ -160,7 +158,18 @@ async def run_scan_cycle(bot: Bot) -> None:
 
 
 async def _run_user_scan(bot: Bot, user_id: int) -> None:
-    """Execute scan for a single user (context already set)."""
+    """Execute AI-first scan for a single user.
+
+    Pipeline per ad:
+    1. Dedup (seen_ads) — free
+    2. Instant-reject patterns in title — free
+    3. Extract details from search result
+    4. Seller filter (company / too many ads) — free
+    5. Fetch ad page for description
+    6. Instant-reject patterns in description — free
+    7. >>> AI ANALYSIS <<< (every ad that passes pre-filters)
+    8. Save result, alert if BUY or CHECK
+    """
     monitoring = await get_setting("monitoring_enabled")
     if monitoring != "true":
         logger.debug("User %d: monitoring disabled, skipping", user_id)
@@ -179,7 +188,7 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
         return
     _user_last_scan[user_id] = time.time()
 
-    # Load proxies
+    # Load user settings
     proxy_raw = await get_setting("proxy_list")
     try:
         proxy_list = json.loads(proxy_raw) if proxy_raw else []
@@ -194,6 +203,12 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
     chat_id = await get_setting("telegram_chat_id") or str(user_id)
     max_seller_str = await get_setting("max_seller_items") or str(config.MAX_SELLER_ITEMS)
     max_seller_items = int(max_seller_str)
+
+    # User preferences for alert filtering
+    send_check_raw = await get_setting("send_check_verdicts")
+    send_check = send_check_raw != "false"  # default true
+    min_profit_raw = await get_setting("min_profit_percent")
+    min_profit_pct = int(min_profit_raw) if min_profit_raw else 0
 
     items = await get_active_items()
     if not items:
@@ -210,6 +225,7 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
     total_alerts = 0
     total_errors = 0
     total_filtered = 0
+    total_ai_sent = 0
 
     try:
         for item in items:
@@ -232,12 +248,9 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                 total_errors += 1
                 continue
 
-            logger.info(
-                "Item '%s': %d listings found (threshold=%d)",
-                item["name"], len(listings), item["threshold_price"],
-            )
+            logger.info("Item '%s': %d listings found", item["name"], len(listings))
 
-            # Baseline scan
+            # Baseline scan: first time — save all ads as seen
             if not await has_seen_ads(item["id"]):
                 logger.info(
                     "First scan for item '%s': saving %d existing ads as baseline",
@@ -258,7 +271,6 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
             # Per-item pipeline counters
             item_dedup = 0
             item_new = 0
-            item_price_skip = 0
             item_title_skip = 0
             item_seller_skip = 0
             item_desc_skip = 0
@@ -268,7 +280,7 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
             for listing in listings:
                 ad_id = listing["ad_id"]
 
-                # (a) Dedup check
+                # (a) Dedup check — free
                 if await is_ad_seen(ad_id):
                     item_dedup += 1
                     continue
@@ -276,19 +288,7 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                 item_new += 1
                 total_new += 1
 
-                # (b) Price threshold check
-                if listing["price"] > item["threshold_price"]:
-                    item_price_skip += 1
-                    await save_seen_ad(
-                        ad_id=ad_id, item_id=item["id"],
-                        price=listing.get("price", 0),
-                        title=listing.get("title", ""),
-                        url=listing.get("url", ""),
-                        skip_reason=f"price {listing['price']} > {item['threshold_price']}",
-                    )
-                    continue
-
-                # (c) Instant-reject patterns in TITLE
+                # (b) Instant-reject patterns in TITLE — free
                 rejected, reason = should_instant_reject(listing["title"], "")
                 if rejected:
                     logger.info("[SKIP] ad_id=%s reason=%r", ad_id, reason)
@@ -303,25 +303,7 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                     )
                     continue
 
-                # (c2) Model pattern check
-                model_pattern = item.get("model_pattern")
-                if model_pattern:
-                    pattern_rejected, pattern_reason = should_reject_model_pattern(
-                        listing["title"], listing.get("params", ""), model_pattern,
-                    )
-                    if pattern_rejected:
-                        logger.info("[SKIP] ad_id=%s reason=%r", ad_id, pattern_reason)
-                        total_filtered += 1
-                        await save_seen_ad(
-                            ad_id=ad_id, item_id=item["id"],
-                            price=listing.get("price", 0),
-                            title=listing.get("title", ""),
-                            url=listing.get("url", ""),
-                            skip_reason=pattern_reason,
-                        )
-                        continue
-
-                # (d) Extract full details
+                # (c) Extract full details from search result
                 raw_item = listing.get("_raw", {})
                 details = api.get_item_details(ad_id, raw_item=raw_item)
 
@@ -335,7 +317,7 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                     )
                     continue
 
-                # (e) Seller filter
+                # (d) Seller filter — free
                 seller_rejected, seller_reason = should_reject_seller(
                     seller_type=details.get("seller_type", "private"),
                     seller_active_items=details.get("seller_active_items", 0),
@@ -354,7 +336,7 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                     )
                     continue
 
-                # (f) Fetch full ad page for description + seller data
+                # (e) Fetch full ad page for description + seller data
                 ad_url = details.get("url", "")
                 try:
                     extra = await api.fetch_ad_extra(ad_url)
@@ -362,13 +344,14 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                         details["description"] = extra["description"]
                     if extra.get("seller_active_items") and not details.get("seller_active_items"):
                         details["seller_active_items"] = extra["seller_active_items"]
-                        seller_rejected2, seller_reason2 = should_reject_seller(
+                        # Re-check seller filter with updated data
+                        seller_rej2, seller_rsn2 = should_reject_seller(
                             seller_type=details.get("seller_type", "private"),
                             seller_active_items=details["seller_active_items"],
                             max_seller_items=max_seller_items,
                         )
-                        if seller_rejected2:
-                            logger.info("[SKIP] ad_id=%s reason=%r (from ad page)", ad_id, seller_reason2)
+                        if seller_rej2:
+                            logger.info("[SKIP] ad_id=%s reason=%r (ad page)", ad_id, seller_rsn2)
                             item_seller_skip += 1
                             total_filtered += 1
                             await save_seen_ad(
@@ -376,14 +359,14 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                                 price=details.get("price", 0),
                                 title=details.get("title", ""),
                                 url=details.get("url", ""),
-                                skip_reason=seller_reason2,
+                                skip_reason=seller_rsn2,
                             )
                             continue
                     await asyncio.sleep(random.uniform(1.0, 3.0))
                 except Exception as e:
                     logger.warning("Failed to fetch ad extra for %s: %s", ad_id, e)
 
-                # (g) Instant-reject patterns in DESCRIPTION
+                # (f) Instant-reject patterns in DESCRIPTION — free
                 description = details.get("description", "")
                 rejected, reason = should_instant_reject(details.get("title", ""), description)
                 if rejected:
@@ -399,17 +382,17 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                     )
                     continue
 
-                # (h) AI analysis
+                # (g) >>> AI ANALYSIS <<< — every ad that passes pre-filters
                 logger.info(
-                    "[AI] ad_id=%s title=%r price=%d",
+                    "[AI] ad_id=%s title=%r price=%d -> sending to AI",
                     ad_id, details.get("title", "")[:60], details.get("price", 0),
                 )
+                total_ai_sent += 1
                 verdict = await analyze_ad(item, details)
 
                 if not verdict:
                     item_ai_err += 1
                     total_errors += 1
-                    # Graceful degradation: if AI is down, send raw alert
                     await save_seen_ad(
                         ad_id=ad_id, item_id=item["id"],
                         price=details.get("price", 0),
@@ -420,8 +403,20 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                     continue
 
                 item_ai_ok += 1
-                recommendation = verdict.get("recommendation", "SKIP")
-                should_alert = recommendation in ("BUY", "CHECK")
+                ai_verdict_str = verdict.get("verdict", "SKIP")
+
+                # (h) Determine if we should alert
+                should_alert = False
+                if ai_verdict_str == "BUY":
+                    should_alert = True
+                elif ai_verdict_str == "CHECK" and send_check:
+                    should_alert = True
+
+                # Optional: min profit filter
+                if should_alert and min_profit_pct > 0:
+                    pct = verdict.get("profit_percent", 0)
+                    if isinstance(pct, (int, float)) and pct < min_profit_pct:
+                        should_alert = False
 
                 await save_seen_ad(
                     ad_id=ad_id,
@@ -434,7 +429,7 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                 )
 
                 if should_alert and chat_id:
-                    alert_text = _format_alert(item, details, verdict)
+                    alert_text = _format_alert(details, verdict)
                     images = details.get("images", [])
                     reply_markup = ad_alert_keyboard(ad_url) if ad_url else None
                     try:
@@ -447,18 +442,22 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                         logger.error("Failed to send alert after retries: %s", e)
                         total_errors += 1
 
+                # Pause between ads to avoid rate limiting
+                await asyncio.sleep(random.uniform(2.0, 5.0))
+
             # Per-item pipeline summary
             logger.info(
                 "Item '%s' pipeline: %d total -> %d dedup, %d new "
-                "-> %d price_skip, %d title_skip, %d seller_skip, "
+                "-> %d title_skip, %d seller_skip, "
                 "%d desc_skip -> %d to_AI (%d ok, %d err)",
                 item["name"], len(listings), item_dedup, item_new,
-                item_price_skip, item_title_skip, item_seller_skip,
+                item_title_skip, item_seller_skip,
                 item_desc_skip, item_ai_ok + item_ai_err,
                 item_ai_ok, item_ai_err,
             )
 
-            await api.delay()
+            # Pause between items
+            await asyncio.sleep(random.uniform(5.0, 10.0))
 
     except Exception as e:
         logger.error("Scan cycle error for user %d: %s", user_id, e, exc_info=True)
@@ -466,8 +465,10 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
         await api.close()
 
     logger.info(
-        "User %d scan complete: %d items, %d new, %d filtered, %d alerts, %d errors",
-        user_id, len(items), total_new, total_filtered, total_alerts, total_errors,
+        "User %d scan complete: %d items, %d new, %d filtered, "
+        "%d AI calls, %d alerts, %d errors",
+        user_id, len(items), total_new, total_filtered,
+        total_ai_sent, total_alerts, total_errors,
     )
 
     # Graceful degradation: notify if all proxies dead

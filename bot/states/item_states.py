@@ -15,14 +15,12 @@ class AddItemFSM(StatesGroup):
     entering_name = State()
     choosing_category = State()
     entering_new_category = State()
-    entering_threshold = State()
     choosing_custom_prompt = State()
     entering_custom_prompt = State()
     confirming = State()
 
 
 class EditItemFSM(StatesGroup):
-    entering_threshold = State()
     entering_url = State()
     entering_custom_prompt = State()
 
@@ -46,3 +44,4 @@ class SettingsFSM(StatesGroup):
     entering_proxy = State()
     entering_max_seller = State()
     entering_city = State()
+    entering_min_profit = State()

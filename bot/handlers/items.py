@@ -66,7 +66,6 @@ def _item_detail_text(item: dict, stats: dict) -> str:
     return (
         f"\U0001f4e6 {item['name']}\n\n"
         f"Категория: {item.get('category_name', 'N/A')}\n"
-        f"Порог покупки: {item['threshold_price']:,}\u20bd\n"
         f"Ссылка: {url_short}\n"
         f"{prompt_line}"
         f"Статус: {status}\n"
@@ -216,44 +215,6 @@ async def do_delete_item(callback: CallbackQuery) -> None:
         )
     else:
         await callback.message.edit_text("\U0001f5d1 Товар удалён.", reply_markup=back_main_keyboard())
-
-
-# --- Edit Threshold ---
-
-@router.callback_query(F.data.startswith("item_edit_threshold_"))
-async def start_edit_threshold(callback: CallbackQuery, state: FSMContext) -> None:
-    item_id = int(callback.data.split("_")[-1])
-    item = await get_item(item_id)
-    await state.set_state(EditItemFSM.entering_threshold)
-    await state.update_data(edit_item_id=item_id)
-    current = f"{item['threshold_price']:,}\u20bd" if item else "?"
-    await callback.message.edit_text(
-        f"Текущий порог: {current}\n\nВведи новую пороговую цену (в \u20bd):",
-        reply_markup=back_main_keyboard(),
-    )
-    await callback.answer()
-
-
-@router.message(EditItemFSM.entering_threshold)
-async def process_edit_threshold(message: Message, state: FSMContext) -> None:
-    try:
-        price = int(message.text.strip().replace(" ", ""))
-    except (ValueError, AttributeError):
-        await message.answer("Некорректная цена. Введи число:")
-        return
-
-    data = await state.get_data()
-    item_id = data["edit_item_id"]
-    await update_item_field(item_id, "threshold_price", price)
-    await state.clear()
-
-    item = await get_item(item_id)
-    stats = await get_item_stats(item_id)
-    await message.answer(
-        f"\u2705 Порог обновлён!\n\n" + _item_detail_text(item, stats),
-        reply_markup=item_detail_keyboard(item),
-        disable_web_page_preview=True,
-    )
 
 
 # --- Edit URL ---
@@ -478,9 +439,11 @@ async def category_chosen(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     await state.update_data(category_id=category_id, category_name=category["name"])
-    await state.set_state(AddItemFSM.entering_threshold)
+    await state.set_state(AddItemFSM.choosing_custom_prompt)
     await callback.message.edit_text(
-        "Введите максимальную цену покупки (порог) в \u20bd:"
+        "Хотите добавить подсказку для ИИ для этого товара?\n"
+        "Подсказка поможет ИИ лучше оценить именно этот товар.",
+        reply_markup=custom_prompt_ask_keyboard(),
     )
     await callback.answer()
 
@@ -494,23 +457,9 @@ async def new_category_entered(message: Message, state: FSMContext) -> None:
 
     cat_id = await add_category(name)
     await state.update_data(category_id=cat_id, category_name=name)
-    await state.set_state(AddItemFSM.entering_threshold)
-    await message.answer(
-        f"\u2705 Категория \u00ab{name}\u00bb создана!\n\n"
-        "Введите максимальную цену покупки (порог) в \u20bd:"
-    )
-
-
-@router.message(AddItemFSM.entering_threshold)
-async def threshold_entered(message: Message, state: FSMContext) -> None:
-    try:
-        price = int(message.text.strip().replace(" ", ""))
-    except (ValueError, AttributeError):
-        await message.answer("Некорректная цена. Введи число:")
-        return
-    await state.update_data(threshold_price=price)
     await state.set_state(AddItemFSM.choosing_custom_prompt)
     await message.answer(
+        f"\u2705 Категория \u00ab{name}\u00bb создана!\n\n"
         "Хотите добавить подсказку для ИИ для этого товара?\n"
         "Подсказка поможет ИИ лучше оценить именно этот товар.",
         reply_markup=custom_prompt_ask_keyboard(),
@@ -562,8 +511,8 @@ async def _show_item_confirm(msg, data: dict, edit_message: bool = False) -> Non
         f"Название: {data['item_name']}\n"
         f"Категория: {data['category_name']}\n"
         f"Ссылка: {url_short}\n"
-        f"Порог покупки: {data['threshold_price']:,}\u20bd\n"
         f"{prompt_line}"
+        f"\n\U0001f916 ИИ сам определит выгодные предложения"
     )
     if edit_message:
         await msg.edit_text(text, reply_markup=item_confirm_keyboard())
@@ -579,7 +528,6 @@ async def confirm_add_item(callback: CallbackQuery, state: FSMContext) -> None:
         category_id=data["category_id"],
         name=data["item_name"],
         avito_url=data["avito_url"],
-        threshold_price=data["threshold_price"],
         custom_prompt=data.get("custom_prompt"),
     )
 
