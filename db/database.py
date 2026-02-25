@@ -139,14 +139,23 @@ async def ensure_db_initialized() -> None:
 def get_all_user_ids() -> list[int]:
     """Discover all user IDs by scanning the data directory."""
     base_dir = os.path.dirname(config.DATABASE_PATH)
-    if not os.path.exists(base_dir):
+    abs_base = os.path.abspath(base_dir)
+    if not os.path.exists(abs_base):
+        logger.warning("Data directory does not exist: %s", abs_base)
         return []
     user_ids = []
-    for name in os.listdir(base_dir):
-        if name.startswith("user_") and os.path.isdir(os.path.join(base_dir, name)):
+    entries = os.listdir(abs_base)
+    for name in entries:
+        full = os.path.join(abs_base, name)
+        if name.startswith("user_") and os.path.isdir(full):
             try:
                 uid = int(name.split("_", 1)[1])
                 user_ids.append(uid)
             except (ValueError, IndexError):
                 pass
+    if not user_ids:
+        logger.warning(
+            "No user directories found in %s (entries: %s)",
+            abs_base, entries[:20],
+        )
     return user_ids

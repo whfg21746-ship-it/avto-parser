@@ -92,10 +92,10 @@ async def run_scan_cycle(bot: Bot) -> None:
     """Execute scan cycle for all registered users in parallel."""
     user_ids = get_all_user_ids()
     if not user_ids:
-        logger.debug("No users found, skipping scan cycle")
+        logger.warning("No user databases found — skipping scan cycle")
         return
 
-    logger.info("Starting parallel scan for %d users", len(user_ids))
+    logger.info("Starting scan for %d user(s): %s", len(user_ids), user_ids)
     await asyncio.gather(
         *(_scan_user_with_context(bot, uid) for uid in user_ids)
     )
@@ -105,6 +105,10 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
     """Execute scan for a single user (context already set)."""
     monitoring = await get_setting("monitoring_enabled")
     if monitoring != "true":
+        logger.warning(
+            "User %d: monitoring disabled (value=%r), skipping",
+            user_id, monitoring,
+        )
         return
 
     # Load proxies
@@ -125,8 +129,13 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
 
     items = await get_active_items()
     if not items:
+        logger.warning("User %d: no active items to scan", user_id)
         await api.close()
         return
+
+    logger.info(
+        "User %d: starting scan of %d active item(s)", user_id, len(items),
+    )
 
     total_new = 0
     total_alerts = 0
@@ -150,7 +159,10 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                 total_errors += 1
                 continue
 
-            logger.info("Item '%s': %d listings found", item["name"], len(listings))
+            logger.info(
+                "Item '%s': %d listings found (threshold=%d)",
+                item["name"], len(listings), item["threshold_price"],
+            )
 
             # Baseline scan: first time seeing this item — mark all
             # current listings as seen so we only alert on NEW ones.
@@ -171,23 +183,37 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                 await api.delay()
                 continue
 
+            # Per-item pipeline counters
+            item_dedup = 0
+            item_new = 0
+            item_price_skip = 0
+            item_title_skip = 0
+            item_seller_skip = 0
+            item_desc_skip = 0
+            item_ai_ok = 0
+            item_ai_err = 0
+
             for listing in listings:
                 ad_id = listing["ad_id"]
 
                 # (a) Dedup check
                 if await is_ad_seen(ad_id):
+                    item_dedup += 1
                     continue
 
+                item_new += 1
                 total_new += 1
 
                 # (b) Price threshold check
                 if listing["price"] > item["threshold_price"]:
+                    item_price_skip += 1
                     continue
 
                 # (c) Instant-reject patterns in TITLE
                 rejected, reason = should_instant_reject(listing["title"], "")
                 if rejected:
                     logger.info("[SKIP] ad_id=%s reason=%r", ad_id, reason)
+                    item_title_skip += 1
                     total_filtered += 1
                     await save_seen_ad(
                         ad_id=ad_id, item_id=item["id"],
@@ -220,6 +246,7 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                 )
                 if seller_rejected:
                     logger.info("[SKIP] ad_id=%s reason=%r", ad_id, seller_reason)
+                    item_seller_skip += 1
                     total_filtered += 1
                     await save_seen_ad(
                         ad_id=ad_id, item_id=item["id"],
@@ -235,6 +262,7 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                 rejected, reason = should_instant_reject(details.get("title", ""), description)
                 if rejected:
                     logger.info("[SKIP] ad_id=%s reason=%r", ad_id, reason)
+                    item_desc_skip += 1
                     total_filtered += 1
                     await save_seen_ad(
                         ad_id=ad_id, item_id=item["id"],
@@ -246,8 +274,13 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                     continue
 
                 # (g) AI analysis — only after all pre-filters passed
+                logger.info(
+                    "[AI] ad_id=%s title=%r price=%d → sending to AI",
+                    ad_id, details.get("title", "")[:60], details.get("price", 0),
+                )
                 verdict = await analyze_ad(item, details)
                 if not verdict:
+                    item_ai_err += 1
                     total_errors += 1
                     await save_seen_ad(
                         ad_id=ad_id, item_id=item["id"],
@@ -258,6 +291,7 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                     )
                     continue
 
+                item_ai_ok += 1
                 recommendation = verdict.get("recommendation", "SKIP")
                 should_alert = recommendation in ("BUY", "CHECK")
 
@@ -286,6 +320,17 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                     except Exception as e:
                         logger.error("Failed to send alert: %s", e)
                         total_errors += 1
+
+            # Per-item pipeline summary
+            logger.info(
+                "Item '%s' pipeline: %d total → %d dedup, %d new "
+                "→ %d price_skip, %d title_skip, %d seller_skip, "
+                "%d desc_skip → %d to_AI (%d ok, %d err)",
+                item["name"], len(listings), item_dedup, item_new,
+                item_price_skip, item_title_skip, item_seller_skip,
+                item_desc_skip, item_ai_ok + item_ai_err,
+                item_ai_ok, item_ai_err,
+            )
 
             await api.delay()
 
