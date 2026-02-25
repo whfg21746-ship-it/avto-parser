@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 import signal
 import sys
 
@@ -29,44 +28,14 @@ async def scheduled_scan(bot: Bot) -> None:
         logger.error("Scheduled scan error: %s", e)
 
 
-PID_FILE = "/tmp/avito-bot.pid"
-
-
-def _kill_old_instance() -> None:
-    """Kill any previous bot process using the PID file."""
-    if os.path.exists(PID_FILE):
-        try:
-            old_pid = int(open(PID_FILE).read().strip())
-            if old_pid != os.getpid():
-                logger.info("Killing old bot process PID %d", old_pid)
-                os.kill(old_pid, signal.SIGKILL)
-        except (ValueError, ProcessLookupError, PermissionError, OSError):
-            pass
-
-    # Write our own PID
-    with open(PID_FILE, "w") as f:
-        f.write(str(os.getpid()))
-
-
 async def main() -> None:
     if not config.TELEGRAM_BOT_TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN is not set")
         sys.exit(1)
 
-    logger.info("Bot PID: %d", os.getpid())
-
-    # Kill any stale bot process before we do anything
-    _kill_old_instance()
-
     bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
-
-    # ExecStartPre already killed old processes.
-    # Just wait for Telegram to release the old polling slot.
-    logger.info("Waiting 5s for Telegram to release old polling session...")
-    await asyncio.sleep(5)
-    logger.info("Starting bot...")
 
     # Per-user database middleware (must be registered before routers)
     dp.message.middleware(UserDBMiddleware())
@@ -103,11 +72,7 @@ async def main() -> None:
     finally:
         scheduler.shutdown(wait=False)
         await bot.session.close()
-        try:
-            os.remove(PID_FILE)
-        except OSError:
-            pass
-        logger.info("Bot stopped (PID %d)", os.getpid())
+        logger.info("Bot stopped")
 
 
 async def _shutdown(dp: Dispatcher, scheduler: AsyncIOScheduler, bot: Bot) -> None:
