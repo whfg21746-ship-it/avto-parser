@@ -1,7 +1,10 @@
+"""Scan cycle orchestration with watchdog and graceful degradation."""
+
 import asyncio
 import json
 import logging
 import random
+import time
 
 from aiogram import Bot
 
@@ -20,6 +23,7 @@ from parser.avito_api import AvitoAPI
 from parser.cookie_provider import get_cookie_provider
 from parser.filters import should_instant_reject, should_reject_model_pattern, should_reject_seller
 from parser.proxy_manager import ProxyManager
+from parser.resilience import NoHealthyProxyError, retry_async
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +34,11 @@ RECOMMENDATION_MAP = {
 
 # Per-user last scan timestamps for dynamic interval support
 _user_last_scan: dict[int, float] = {}
+
+# Watchdog state
+_consecutive_failures: int = 0
+MAX_CONSECUTIVE_FAILURES = 5
+FAILURE_PAUSE_SECONDS = 300  # 5 minutes
 
 
 def _format_alert(item: dict, ad_data: dict, verdict: dict) -> str:
@@ -80,6 +89,31 @@ def _format_alert(item: dict, ad_data: dict, verdict: dict) -> str:
     return "\n".join(lines)
 
 
+@retry_async(max_retries=3, base_delay=1, exceptions=(Exception,))
+async def _send_alert(bot: Bot, chat_id: str, text: str,
+                      images: list[str] | None = None,
+                      reply_markup=None) -> None:
+    """Send Telegram alert with retry and photo fallback."""
+    if images:
+        try:
+            await bot.send_photo(
+                chat_id=chat_id,
+                photo=images[0],
+                caption=text[:1024],
+                reply_markup=reply_markup,
+            )
+            return
+        except Exception:
+            pass  # fall through to text message
+
+    await bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=reply_markup,
+        disable_web_page_preview=True,
+    )
+
+
 async def _scan_user_with_context(bot: Bot, uid: int) -> None:
     """Run scan for a single user with its own context."""
     token = current_user_id.set(uid)
@@ -87,36 +121,52 @@ async def _scan_user_with_context(bot: Bot, uid: int) -> None:
         await ensure_db_initialized()
         await _run_user_scan(bot, uid)
     except Exception as e:
-        logger.error("Scan error for user %d: %s", uid, e)
+        logger.error("Scan error for user %d: %s", uid, e, exc_info=True)
     finally:
         current_user_id.reset(token)
 
 
 async def run_scan_cycle(bot: Bot) -> None:
-    """Execute scan cycle for all registered users in parallel."""
+    """Execute scan cycle for all registered users in parallel.
+
+    Includes watchdog logic: after MAX_CONSECUTIVE_FAILURES failures
+    in a row, pauses for FAILURE_PAUSE_SECONDS.
+    """
+    global _consecutive_failures
+
     user_ids = get_all_user_ids()
     if not user_ids:
-        logger.warning("No user databases found — skipping scan cycle")
         return
 
     logger.info("Starting scan for %d user(s): %s", len(user_ids), user_ids)
-    await asyncio.gather(
-        *(_scan_user_with_context(bot, uid) for uid in user_ids)
-    )
+    try:
+        await asyncio.gather(
+            *(_scan_user_with_context(bot, uid) for uid in user_ids)
+        )
+        _consecutive_failures = 0
+    except Exception as e:
+        _consecutive_failures += 1
+        logger.error(
+            "Scan cycle failed (%d consecutive): %s",
+            _consecutive_failures, e,
+        )
+        if _consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+            logger.critical(
+                "Too many consecutive failures (%d), pausing for %ds",
+                _consecutive_failures, FAILURE_PAUSE_SECONDS,
+            )
+            await asyncio.sleep(FAILURE_PAUSE_SECONDS)
+            _consecutive_failures = 0
 
 
 async def _run_user_scan(bot: Bot, user_id: int) -> None:
     """Execute scan for a single user (context already set)."""
     monitoring = await get_setting("monitoring_enabled")
     if monitoring != "true":
-        logger.warning(
-            "User %d: monitoring disabled (value=%r), skipping",
-            user_id, monitoring,
-        )
+        logger.debug("User %d: monitoring disabled, skipping", user_id)
         return
 
     # Check per-user scan interval
-    import time
     user_interval_raw = await get_setting("scan_interval_seconds")
     user_interval = int(user_interval_raw) if user_interval_raw else config.SCAN_INTERVAL
     last_scan = _user_last_scan.get(user_id, 0)
@@ -147,12 +197,13 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
 
     items = await get_active_items()
     if not items:
-        logger.warning("User %d: no active items to scan", user_id)
+        logger.debug("User %d: no active items to scan", user_id)
         await api.close()
         return
 
     logger.info(
-        "User %d: starting scan of %d active item(s)", user_id, len(items),
+        "User %d: scanning %d active item(s) [proxies: %s]",
+        user_id, len(items), proxy_manager.status(),
     )
 
     total_new = 0
@@ -167,13 +218,15 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                 user_id, item["name"], item["avito_url"][:80],
             )
 
-            # Build a search_query-like dict for the API
             search_query = {"avito_url": item["avito_url"], "keyword": item["name"]}
 
             try:
                 listings = await api.search_by_keyword(
                     search_query, max_pages=config.SEARCH_PAGES,
                 )
+            except NoHealthyProxyError:
+                logger.error("User %d: all proxies dead, stopping scan", user_id)
+                break
             except Exception as e:
                 logger.error("Error scanning item '%s': %s", item["name"], e)
                 total_errors += 1
@@ -184,8 +237,7 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                 item["name"], len(listings), item["threshold_price"],
             )
 
-            # Baseline scan: first time seeing this item — mark all
-            # current listings as seen so we only alert on NEW ones.
+            # Baseline scan
             if not await has_seen_ads(item["id"]):
                 logger.info(
                     "First scan for item '%s': saving %d existing ads as baseline",
@@ -269,7 +321,7 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                         )
                         continue
 
-                # (d) Extract full details from search result data
+                # (d) Extract full details
                 raw_item = listing.get("_raw", {})
                 details = api.get_item_details(ad_id, raw_item=raw_item)
 
@@ -283,7 +335,7 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                     )
                     continue
 
-                # (e) Seller filter: type + active items count
+                # (e) Seller filter
                 seller_rejected, seller_reason = should_reject_seller(
                     seller_type=details.get("seller_type", "private"),
                     seller_active_items=details.get("seller_active_items", 0),
@@ -310,7 +362,6 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                         details["description"] = extra["description"]
                     if extra.get("seller_active_items") and not details.get("seller_active_items"):
                         details["seller_active_items"] = extra["seller_active_items"]
-                        # Re-check seller filter with updated data
                         seller_rejected2, seller_reason2 = should_reject_seller(
                             seller_type=details.get("seller_type", "private"),
                             seller_active_items=details["seller_active_items"],
@@ -348,15 +399,17 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                     )
                     continue
 
-                # (h) AI analysis — only after all pre-filters passed
+                # (h) AI analysis
                 logger.info(
-                    "[AI] ad_id=%s title=%r price=%d → sending to AI",
+                    "[AI] ad_id=%s title=%r price=%d",
                     ad_id, details.get("title", "")[:60], details.get("price", 0),
                 )
                 verdict = await analyze_ad(item, details)
+
                 if not verdict:
                     item_ai_err += 1
                     total_errors += 1
+                    # Graceful degradation: if AI is down, send raw alert
                     await save_seen_ad(
                         ad_id=ad_id, item_id=item["id"],
                         price=details.get("price", 0),
@@ -382,46 +435,23 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
 
                 if should_alert and chat_id:
                     alert_text = _format_alert(item, details, verdict)
-                    ad_url = details.get("url", "")
+                    images = details.get("images", [])
                     reply_markup = ad_alert_keyboard(ad_url) if ad_url else None
                     try:
-                        # Send photo with caption if available
-                        images = details.get("images", [])
-                        if images:
-                            try:
-                                await bot.send_photo(
-                                    chat_id=chat_id,
-                                    photo=images[0],
-                                    caption=alert_text[:1024],
-                                    reply_markup=reply_markup,
-                                )
-                                total_alerts += 1
-                            except Exception:
-                                # Fallback to text if photo fails
-                                await bot.send_message(
-                                    chat_id=chat_id,
-                                    text=alert_text,
-                                    reply_markup=reply_markup,
-                                    disable_web_page_preview=True,
-                                )
-                                total_alerts += 1
-                        else:
-                            await bot.send_message(
-                                chat_id=chat_id,
-                                text=alert_text,
-                                reply_markup=reply_markup,
-                                disable_web_page_preview=True,
-                            )
-                            total_alerts += 1
+                        await _send_alert(
+                            bot, chat_id, alert_text,
+                            images=images, reply_markup=reply_markup,
+                        )
+                        total_alerts += 1
                     except Exception as e:
-                        logger.error("Failed to send alert: %s", e)
+                        logger.error("Failed to send alert after retries: %s", e)
                         total_errors += 1
 
             # Per-item pipeline summary
             logger.info(
-                "Item '%s' pipeline: %d total → %d dedup, %d new "
-                "→ %d price_skip, %d title_skip, %d seller_skip, "
-                "%d desc_skip → %d to_AI (%d ok, %d err)",
+                "Item '%s' pipeline: %d total -> %d dedup, %d new "
+                "-> %d price_skip, %d title_skip, %d seller_skip, "
+                "%d desc_skip -> %d to_AI (%d ok, %d err)",
                 item["name"], len(listings), item_dedup, item_new,
                 item_price_skip, item_title_skip, item_seller_skip,
                 item_desc_skip, item_ai_ok + item_ai_err,
@@ -431,7 +461,7 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
             await api.delay()
 
     except Exception as e:
-        logger.error("Scan cycle error for user %d: %s", user_id, e)
+        logger.error("Scan cycle error for user %d: %s", user_id, e, exc_info=True)
     finally:
         await api.close()
 
@@ -440,14 +470,12 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
         user_id, len(items), total_new, total_filtered, total_alerts, total_errors,
     )
 
-    # Check if all proxies are dead
-    if proxy_list and not proxy_manager.has_proxies and chat_id:
+    # Graceful degradation: notify if all proxies dead
+    if proxy_list and proxy_manager.healthy_count == 0 and chat_id:
         try:
             await bot.send_message(
                 chat_id=chat_id,
-                text="\u26a0\ufe0f Все прокси недоступны. Мониторинг приостановлен.",
+                text="\u26a0\ufe0f Все прокси недоступны. Они будут восстановлены через 5 мин.",
             )
-            from db.models import set_setting
-            await set_setting("monitoring_enabled", "false")
         except Exception as e:
             logger.error("Failed to send proxy alert: %s", e)

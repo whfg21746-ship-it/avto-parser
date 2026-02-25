@@ -1,48 +1,85 @@
+"""Proxy manager with health-check and auto-recovery."""
+
 import logging
 import random
+import time
+
+from parser.resilience import NoHealthyProxyError
 
 logger = logging.getLogger(__name__)
+
+# How long a failed proxy stays in quarantine before recovery attempt
+RECOVERY_TIMEOUT = 300  # 5 minutes
 
 
 class ProxyManager:
     def __init__(self, proxies: list[str]) -> None:
-        self.proxies: list[str] = list(proxies)
-        self.current_index: int = 0
-        self.request_count: int = 0
-        self._rotate_threshold: int = random.randint(10, 20)
+        self.healthy: set[str] = set(proxies)
+        self.failed: dict[str, tuple[int, float]] = {}  # proxy -> (fail_count, last_fail_time)
+        self._all_proxies: list[str] = list(proxies)
 
     def get_proxy(self) -> str | None:
-        if not self.proxies:
+        """Return a random healthy proxy, or None if no proxies configured."""
+        if not self._all_proxies:
             return None
-        proxy = self.proxies[self.current_index]
-        self.request_count += 1
-        if self.request_count >= self._rotate_threshold:
-            self._rotate()
-        return proxy
+        if not self.healthy:
+            self._recover_failed()
+        if not self.healthy:
+            raise NoHealthyProxyError(
+                f"All {len(self._all_proxies)} proxies dead"
+            )
+        return random.choice(list(self.healthy))
 
-    def _rotate(self) -> None:
-        if not self.proxies:
+    def mark_failed(self, proxy: str) -> None:
+        """Mark a proxy as unhealthy."""
+        if proxy not in self._all_proxies:
             return
-        self.current_index = (self.current_index + 1) % len(self.proxies)
-        self.request_count = 0
-        self._rotate_threshold = random.randint(10, 20)
-        logger.debug("Rotated to proxy index %d", self.current_index)
+        self.healthy.discard(proxy)
+        count = self.failed.get(proxy, (0, 0))[0] + 1
+        self.failed[proxy] = (count, time.time())
+        logger.warning(
+            "Proxy marked failed (%d times): %s [%d healthy remaining]",
+            count, proxy, len(self.healthy),
+        )
+
+    def mark_healthy(self, proxy: str) -> None:
+        """Return a proxy to healthy pool."""
+        if proxy not in self._all_proxies:
+            return
+        self.healthy.add(proxy)
+        self.failed.pop(proxy, None)
 
     def force_rotate(self) -> None:
-        self._rotate()
-        logger.info("Force-rotated proxy after error")
+        """Compatibility shim: old code calls this on errors."""
+        pass
 
-    def remove_proxy(self, proxy: str) -> None:
-        if proxy in self.proxies:
-            self.proxies.remove(proxy)
-            if self.current_index >= len(self.proxies):
-                self.current_index = 0
-            logger.warning("Removed proxy %s, %d remaining", proxy, len(self.proxies))
+    def _recover_failed(self) -> None:
+        """Recover proxies that have been in quarantine long enough."""
+        now = time.time()
+        recovered = []
+        for proxy, (count, last_fail) in list(self.failed.items()):
+            if now - last_fail > RECOVERY_TIMEOUT:
+                self.healthy.add(proxy)
+                del self.failed[proxy]
+                recovered.append(proxy)
+        if recovered:
+            logger.info("Recovered %d proxies from quarantine", len(recovered))
 
     @property
     def has_proxies(self) -> bool:
-        return len(self.proxies) > 0
+        return len(self._all_proxies) > 0
 
     @property
     def count(self) -> int:
-        return len(self.proxies)
+        return len(self._all_proxies)
+
+    @property
+    def healthy_count(self) -> int:
+        return len(self.healthy)
+
+    def status(self) -> str:
+        """Human-readable status string."""
+        return (
+            f"{len(self.healthy)}/{len(self._all_proxies)} healthy, "
+            f"{len(self.failed)} in quarantine"
+        )

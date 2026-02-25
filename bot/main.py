@@ -1,5 +1,7 @@
 import asyncio
+import fcntl
 import logging
+import os
 import sys
 
 from aiogram import Bot, Dispatcher
@@ -19,6 +21,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Global reference to prevent GC from closing the lock file
+_lock_file = None
+
+
+def ensure_single_instance() -> None:
+    """Prevent multiple bot instances via PID lock file."""
+    global _lock_file
+    _lock_file = open("/tmp/avito-bot.lock", "w")
+    try:
+        fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_file.write(str(os.getpid()))
+        _lock_file.flush()
+    except IOError:
+        print("Bot already running! Exiting.")
+        sys.exit(1)
+
 
 async def scheduled_scan(bot: Bot) -> None:
     """Wrapper for the scan cycle called by APScheduler."""
@@ -29,6 +47,8 @@ async def scheduled_scan(bot: Bot) -> None:
 
 
 async def main() -> None:
+    ensure_single_instance()
+
     if not config.TELEGRAM_BOT_TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN is not set")
         sys.exit(1)

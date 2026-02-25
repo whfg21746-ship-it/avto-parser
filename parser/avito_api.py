@@ -12,6 +12,7 @@ from curl_cffi.requests import AsyncSession
 
 from parser.cookie_provider import CookieProvider
 from parser.proxy_manager import ProxyManager
+from parser.resilience import NoHealthyProxyError
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,7 @@ class AvitoAPI:
         self.cookie_provider = cookie_provider
         self._session: AsyncSession | None = None
         self._current_profile: str | None = None
+        self._current_proxy: str | None = None
         self._warmed = False
 
     async def _ensure_session(self) -> AsyncSession:
@@ -83,7 +85,12 @@ class AvitoAPI:
                 pass
 
         self._current_profile = random.choice(BROWSER_PROFILES)
-        proxy_url = self.proxy_manager.get_proxy()
+        try:
+            proxy_url = self.proxy_manager.get_proxy()
+        except NoHealthyProxyError:
+            proxy_url = None
+            logger.warning("No healthy proxies available, connecting directly")
+        self._current_proxy = proxy_url
         proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
 
         self._session = AsyncSession(
@@ -114,6 +121,9 @@ class AvitoAPI:
                     },
                 )
                 self._warmed = True
+                # Successful warmup — mark proxy healthy
+                if proxy_url:
+                    self.proxy_manager.mark_healthy(proxy_url)
             except Exception:
                 pass  # best-effort
 
@@ -155,6 +165,8 @@ class AvitoAPI:
                 response = await session.get(url, headers=headers)
 
                 if response.status_code == 200:
+                    if self._current_proxy:
+                        self.proxy_manager.mark_healthy(self._current_proxy)
                     return response.text
                 elif response.status_code == 429:
                     delay = 20 * (attempt + 1)
@@ -162,7 +174,8 @@ class AvitoAPI:
                         "HTTP 429 rate limited, pausing %ds (attempt %d/3)",
                         delay, attempt + 1,
                     )
-                    self.proxy_manager.force_rotate()
+                    if self._current_proxy:
+                        self.proxy_manager.mark_failed(self._current_proxy)
                     session = await self._ensure_session()
                     await asyncio.sleep(delay)
                 elif response.status_code in (301, 302, 403):
@@ -173,7 +186,8 @@ class AvitoAPI:
                     )
                     if self.cookie_provider:
                         self.cookie_provider.handle_block()
-                    self.proxy_manager.force_rotate()
+                    if self._current_proxy:
+                        self.proxy_manager.mark_failed(self._current_proxy)
                     session = await self._ensure_session()
                     await asyncio.sleep(delay)
                 else:
@@ -185,7 +199,8 @@ class AvitoAPI:
                 logger.warning(
                     "Request error on attempt %d: %s", attempt + 1, e,
                 )
-                self.proxy_manager.force_rotate()
+                if self._current_proxy:
+                    self.proxy_manager.mark_failed(self._current_proxy)
                 session = await self._ensure_session()
                 await asyncio.sleep(15)
 
