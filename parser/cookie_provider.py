@@ -21,9 +21,19 @@ logger = logging.getLogger(__name__)
 # How long cookies stay valid before refresh (25 minutes)
 COOKIE_TTL = 25 * 60
 
-# Max wait for ft cookie (10 attempts × 5 seconds = 50 seconds)
-FT_POLL_ATTEMPTS = 10
-FT_POLL_INTERVAL = 5
+# Max wait for ft cookie per page (15 attempts × 3 seconds = 45 seconds)
+FT_POLL_ATTEMPTS = 15
+FT_POLL_INTERVAL = 3
+
+# How many different pages to try if first attempt fails
+FT_MAX_PAGE_RETRIES = 2
+
+# Target pages to try for cookie acquisition (varied page types)
+_COOKIE_TARGETS = [
+    lambda: f"https://www.avito.ru/{random.randint(1111111111, 9999999999)}",
+    lambda: "https://www.avito.ru/rossiya",
+    lambda: f"https://www.avito.ru/moskva?q={random.randint(100, 999)}",
+]
 
 
 class CookieProvider:
@@ -31,6 +41,10 @@ class CookieProvider:
 
     # Class-level flag: if Playwright can't start (missing libs), don't retry
     _browser_broken: bool = False
+
+    # Class-level stats for monitoring
+    _total_attempts: int = 0
+    _successful_attempts: int = 0
 
     def __init__(self, proxy_url: str | None = None) -> None:
         self._proxy_url = proxy_url
@@ -51,6 +65,14 @@ class CookieProvider:
             return True
         return (time.time() - self._obtained_at) > COOKIE_TTL
 
+    @classmethod
+    def success_rate(cls) -> str:
+        """Return success rate string for monitoring."""
+        if cls._total_attempts == 0:
+            return "no attempts"
+        rate = cls._successful_attempts / cls._total_attempts * 100
+        return f"{cls._successful_attempts}/{cls._total_attempts} ({rate:.0f}%)"
+
     async def ensure_cookies(self) -> dict[str, str]:
         """Get cookies, refreshing if expired or missing."""
         if not self.is_expired and self.has_ft:
@@ -58,24 +80,30 @@ class CookieProvider:
         return await self.refresh()
 
     async def refresh(self) -> dict[str, str]:
-        """Force-refresh cookies via Playwright."""
+        """Force-refresh cookies via Playwright with retries."""
         if CookieProvider._browser_broken:
             logger.debug("Playwright broken, skipping cookie refresh")
             return self._cookies
 
+        CookieProvider._total_attempts += 1
         logger.info("Refreshing Avito cookies via Playwright...")
+
         try:
             self._cookies = await self._get_cookies_playwright()
             self._obtained_at = time.time()
             if self.has_ft:
+                CookieProvider._successful_attempts += 1
                 logger.info(
-                    "Got %d cookies (ft=%s...)",
+                    "Got %d cookies (ft=%s...) [success rate: %s]",
                     len(self._cookies),
                     self._cookies["ft"][:20],
+                    self.success_rate(),
                 )
             else:
                 logger.warning(
-                    "Got %d cookies but NO ft cookie!", len(self._cookies)
+                    "Got %d cookies but NO ft cookie! [success rate: %s]",
+                    len(self._cookies),
+                    self.success_rate(),
                 )
         except Exception as e:
             err_msg = str(e)
@@ -98,7 +126,10 @@ class CookieProvider:
         self._obtained_at = 0
 
     async def _get_cookies_playwright(self) -> dict[str, str]:
-        """Launch headless browser and extract cookies."""
+        """Launch headless browser and extract cookies.
+
+        Tries multiple page targets if the first doesn't produce an ft cookie.
+        """
         try:
             from playwright.async_api import async_playwright
         except ImportError:
@@ -141,61 +172,91 @@ class CookieProvider:
                 args=["--no-sandbox", "--disable-dev-shm-usage"],
             )
 
-            context = await browser.new_context(
-                proxy=proxy_config,
-                locale="ru-RU",
-                viewport={"width": 1920, "height": 1080},
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/136.0.0.0 Safari/537.36"
-                ),
-            )
-
-            page = await context.new_page()
-
-            # Manual stealth if plugin not available
-            if not stealth:
-                await page.add_init_script("""
-                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                    Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
-                    Object.defineProperty(navigator, 'vendor', {get: () => 'Google Inc.'});
-                    window.chrome = {runtime: {}};
-                    Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3]});
-                    Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru']});
-                """)
-
-            # Visit a random non-existent ad (like Duff89/parser_avito)
-            random_id = str(random.randint(1111111111, 9999999999))
-            target_url = f"https://www.avito.ru/{random_id}"
-
-            try:
-                await page.goto(
-                    target_url, timeout=60000, wait_until="domcontentloaded"
+            # Try multiple page targets to get ft cookie
+            for page_retry in range(FT_MAX_PAGE_RETRIES):
+                context = await browser.new_context(
+                    proxy=proxy_config,
+                    locale="ru-RU",
+                    viewport={"width": 1920, "height": 1080},
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/136.0.0.0 Safari/537.36"
+                    ),
                 )
-            except Exception as e:
-                logger.debug("Page load (expected to be 404): %s", e)
 
-            # Poll for ft cookie
-            for attempt in range(FT_POLL_ATTEMPTS):
-                raw_cookie = await page.evaluate("() => document.cookie")
-                cookie_dict = _parse_cookie_string(raw_cookie)
+                page = await context.new_page()
 
-                if cookie_dict.get("ft"):
-                    logger.debug("ft cookie obtained on attempt %d", attempt + 1)
-                    cookies = cookie_dict
-                    break
+                # Manual stealth if plugin not available
+                if not stealth:
+                    await page.add_init_script("""
+                        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                        Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+                        Object.defineProperty(navigator, 'vendor', {get: () => 'Google Inc.'});
+                        window.chrome = {runtime: {}};
+                        Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3]});
+                        Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru']});
+                    """)
 
-                await asyncio.sleep(FT_POLL_INTERVAL)
-            else:
-                # Return whatever we got even without ft
+                # Pick a target URL (cycle through different page types)
+                target_fn = _COOKIE_TARGETS[page_retry % len(_COOKIE_TARGETS)]
+                target_url = target_fn()
+                logger.debug(
+                    "Cookie attempt %d/%d: visiting %s",
+                    page_retry + 1, FT_MAX_PAGE_RETRIES, target_url,
+                )
+
+                try:
+                    await page.goto(
+                        target_url, timeout=60000, wait_until="domcontentloaded"
+                    )
+                except Exception as e:
+                    logger.debug("Page load (expected for non-existent page): %s", e)
+
+                # Poll for ft cookie
+                for attempt in range(FT_POLL_ATTEMPTS):
+                    raw_cookie = await page.evaluate("() => document.cookie")
+                    cookie_dict = _parse_cookie_string(raw_cookie)
+
+                    if cookie_dict.get("ft"):
+                        logger.debug(
+                            "ft cookie obtained on attempt %d (page retry %d)",
+                            attempt + 1, page_retry + 1,
+                        )
+                        cookies = cookie_dict
+                        await context.close()
+                        await browser.close()
+                        return cookies
+
+                    await asyncio.sleep(FT_POLL_INTERVAL)
+
+                # No ft from this page, save whatever we got
                 raw_cookie = await page.evaluate("() => document.cookie")
                 cookies = _parse_cookie_string(raw_cookie)
-                logger.warning("ft cookie not obtained after %d attempts", FT_POLL_ATTEMPTS)
+                logger.warning(
+                    "ft cookie not obtained on page retry %d/%d (%d polls)",
+                    page_retry + 1, FT_MAX_PAGE_RETRIES, FT_POLL_ATTEMPTS,
+                )
+                await context.close()
 
             await browser.close()
 
         return cookies
+
+
+# Module-level cache for CookieProvider instances (per proxy URL)
+_provider_cache: dict[str | None, CookieProvider] = {}
+
+
+def get_cookie_provider(proxy_url: str | None = None) -> CookieProvider:
+    """Get or create a cached CookieProvider for the given proxy.
+
+    Reuses the same instance across scan cycles to avoid re-launching
+    Playwright and benefit from cookie TTL caching.
+    """
+    if proxy_url not in _provider_cache:
+        _provider_cache[proxy_url] = CookieProvider(proxy_url=proxy_url)
+    return _provider_cache[proxy_url]
 
 
 def _parse_cookie_string(raw: str) -> dict[str, str]:

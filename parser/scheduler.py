@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import random
 
 from aiogram import Bot
 
@@ -16,7 +17,7 @@ from db.models import (
 )
 import config
 from parser.avito_api import AvitoAPI
-from parser.cookie_provider import CookieProvider
+from parser.cookie_provider import get_cookie_provider
 from parser.filters import should_instant_reject, should_reject_seller
 from parser.proxy_manager import ProxyManager
 
@@ -120,7 +121,7 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
 
     proxy_manager = ProxyManager(proxy_list)
     first_proxy = proxy_list[0] if proxy_list else None
-    cookie_provider = CookieProvider(proxy_url=first_proxy)
+    cookie_provider = get_cookie_provider(proxy_url=first_proxy)
     api = AvitoAPI(proxy_manager, cookie_provider=cookie_provider)
 
     chat_id = await get_setting("telegram_chat_id") or str(user_id)
@@ -264,7 +265,37 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                     )
                     continue
 
-                # (f) Instant-reject patterns in DESCRIPTION
+                # (f) Fetch full ad page for description + seller data
+                ad_url = details.get("url", "")
+                try:
+                    extra = await api.fetch_ad_extra(ad_url)
+                    if extra.get("description"):
+                        details["description"] = extra["description"]
+                    if extra.get("seller_active_items") and not details.get("seller_active_items"):
+                        details["seller_active_items"] = extra["seller_active_items"]
+                        # Re-check seller filter with updated data
+                        seller_rejected2, seller_reason2 = should_reject_seller(
+                            seller_type=details.get("seller_type", "private"),
+                            seller_active_items=details["seller_active_items"],
+                            max_seller_items=max_seller_items,
+                        )
+                        if seller_rejected2:
+                            logger.info("[SKIP] ad_id=%s reason=%r (from ad page)", ad_id, seller_reason2)
+                            item_seller_skip += 1
+                            total_filtered += 1
+                            await save_seen_ad(
+                                ad_id=ad_id, item_id=item["id"],
+                                price=details.get("price", 0),
+                                title=details.get("title", ""),
+                                url=details.get("url", ""),
+                                skip_reason=seller_reason2,
+                            )
+                            continue
+                    await asyncio.sleep(random.uniform(1.0, 3.0))
+                except Exception as e:
+                    logger.warning("Failed to fetch ad extra for %s: %s", ad_id, e)
+
+                # (g) Instant-reject patterns in DESCRIPTION
                 description = details.get("description", "")
                 rejected, reason = should_instant_reject(details.get("title", ""), description)
                 if rejected:
@@ -280,7 +311,7 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                     )
                     continue
 
-                # (g) AI analysis — only after all pre-filters passed
+                # (h) AI analysis — only after all pre-filters passed
                 logger.info(
                     "[AI] ad_id=%s title=%r price=%d → sending to AI",
                     ad_id, details.get("title", "")[:60], details.get("price", 0),

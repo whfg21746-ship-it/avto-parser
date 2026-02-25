@@ -41,6 +41,20 @@ def _extract_price(raw: Any) -> int:
     return 0
 
 
+def _deep_find_description(data: dict, max_depth: int = 3, _depth: int = 0) -> str:
+    """Recursively search for a 'description' key in nested dicts."""
+    if _depth > max_depth:
+        return ""
+    for key, value in data.items():
+        if key == "description" and isinstance(value, str) and len(value) > 20:
+            return value
+        if isinstance(value, dict):
+            result = _deep_find_description(value, max_depth, _depth + 1)
+            if result:
+                return result
+    return ""
+
+
 class AvitoAPI:
     """Avito scraper that extracts embedded JSON from HTML pages.
 
@@ -590,6 +604,125 @@ class AvitoAPI:
             "images": images,
             "params_str": params_str,
         }
+
+    async def fetch_ad_description(self, ad_url: str) -> str:
+        """Fetch the ad detail page and extract the full description.
+
+        Search results don't include descriptions, so we load
+        the actual ad page to get it from embedded JSON.
+        """
+        if not ad_url:
+            return ""
+
+        html_text = await self._fetch_html(ad_url)
+        if not html_text:
+            return ""
+
+        data = self._extract_json_from_html(html_text)
+        if not data:
+            logger.debug("No embedded JSON on ad page: %s", ad_url)
+            return ""
+
+        description = self._extract_description_from_ad_data(data)
+        if description:
+            logger.debug(
+                "Fetched description (%d chars) from %s",
+                len(description), ad_url,
+            )
+        return description
+
+    @staticmethod
+    def _extract_description_from_ad_data(data: dict) -> str:
+        """Navigate ad page JSON to find the description field."""
+        # Path 1: state.item.description (most common)
+        item = data.get("item", {})
+        if isinstance(item, dict):
+            desc = item.get("description")
+            if desc and isinstance(desc, str) and len(desc) > 5:
+                return desc.strip()
+
+        # Path 2: data.item.description
+        inner = data.get("data", {})
+        if isinstance(inner, dict):
+            inner_item = inner.get("item", {})
+            if isinstance(inner_item, dict):
+                desc = inner_item.get("description")
+                if desc and isinstance(desc, str) and len(desc) > 5:
+                    return desc.strip()
+
+        # Path 3: buyerItem / cardItem / viewItem
+        for key in ("buyerItem", "cardItem", "viewItem"):
+            obj = data.get(key, {})
+            if isinstance(obj, dict):
+                desc = obj.get("description")
+                if desc and isinstance(desc, str) and len(desc) > 5:
+                    return desc.strip()
+
+        # Path 4: deep search in nested dicts (max 3 levels)
+        desc = _deep_find_description(data, max_depth=3)
+        if desc:
+            return desc.strip()
+
+        return ""
+
+    async def fetch_ad_extra(self, ad_url: str) -> dict:
+        """Fetch ad page and extract description + seller active items.
+
+        Returns dict with 'description' and 'seller_active_items' keys.
+        """
+        result = {"description": "", "seller_active_items": 0}
+        if not ad_url:
+            return result
+
+        html_text = await self._fetch_html(ad_url)
+        if not html_text:
+            return result
+
+        data = self._extract_json_from_html(html_text)
+        if not data:
+            return result
+
+        result["description"] = self._extract_description_from_ad_data(data)
+
+        # Try to extract seller active items from ad page
+        seller_count = self._extract_seller_items_from_ad_data(data)
+        if seller_count > 0:
+            result["seller_active_items"] = seller_count
+
+        return result
+
+    @staticmethod
+    def _extract_seller_items_from_ad_data(data: dict) -> int:
+        """Try to extract seller's active items count from the ad detail page."""
+        for key in ("seller", "sellerInfo", "userInfo", "user"):
+            seller = data.get(key, {})
+            if not isinstance(seller, dict):
+                continue
+            for field in ("itemsCount", "activeItems", "totalItems",
+                          "itemsActive"):
+                val = seller.get(field)
+                if isinstance(val, (int, float)) and val > 0:
+                    return int(val)
+            # Try text field: "112 объявлений"
+            for field in ("itemsText", "activeItemsText"):
+                text = seller.get(field, "")
+                if text:
+                    match = re.search(r"(\d+)", str(text))
+                    if match:
+                        return int(match.group(1))
+
+        # Check nested data.seller
+        inner = data.get("data", {})
+        if isinstance(inner, dict):
+            for key in ("seller", "sellerInfo"):
+                seller = inner.get(key, {})
+                if isinstance(seller, dict):
+                    for field in ("itemsCount", "activeItems", "totalItems"):
+                        val = seller.get(field)
+                        if isinstance(val, (int, float)) and val > 0:
+                            return int(val)
+
+        return 0
 
     async def delay(self) -> None:
         """Random delay between requests."""

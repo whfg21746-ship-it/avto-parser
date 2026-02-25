@@ -20,3 +20,11 @@ MAX_SELLER_ITEMS: int = int(os.getenv("MAX_SELLER_ITEMS", "10"))
 DATABASE_PATH: str = os.getenv("DATABASE_PATH", "./data/flipper.db")
 
 AVITO_BASE_URL: str = "https://www.avito.ru"
+
+# Whitelist of Telegram user IDs allowed to use the bot.
+# Empty list = no restriction (anyone can use).
+_allowed_raw = os.getenv("ALLOWED_USERS", "")
+ALLOWED_USERS: list[int] = [
+    int(uid.strip()) for uid in _allowed_raw.split(",")
+    if uid.strip().isdigit()
+]
