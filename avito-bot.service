@@ -6,11 +6,16 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/root/avto-parser
-ExecStartPre=/bin/bash -c '/usr/bin/pkill -9 -f "python.*bot\\.main" || true'
-ExecStartPre=/bin/sleep 5
+# Double-kill: first kills any lingering bot process, waits, kills again (catches stragglers)
+ExecStartPre=/bin/bash -c '/usr/bin/pkill -9 -f "bot[.]main" || true; sleep 2; /usr/bin/pkill -9 -f "bot[.]main" || true'
+ExecStartPre=/bin/sleep 3
 ExecStart=/root/avto-parser/venv/bin/python3 -m bot.main
 Restart=no
 Environment=PYTHONUNBUFFERED=1
+# Ensure systemd kills ALL child processes on stop, not just the main one
+KillMode=mixed
+# Don't wait too long for graceful shutdown — SIGKILL after 10s
+TimeoutStopSec=10
 
 [Install]
 WantedBy=multi-user.target
