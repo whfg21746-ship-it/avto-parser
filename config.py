@@ -18,6 +18,7 @@ except (json.JSONDecodeError, TypeError):
 SCAN_INTERVAL: int = int(os.getenv("SCAN_INTERVAL", "60"))
 MAX_SELLER_ITEMS: int = int(os.getenv("MAX_SELLER_ITEMS", "10"))
 DATABASE_PATH: str = os.getenv("DATABASE_PATH", "./data/flipper.db")
+SEARCH_PAGES: int = int(os.getenv("SEARCH_PAGES", "3"))
 
 AVITO_BASE_URL: str = "https://www.avito.ru"
 

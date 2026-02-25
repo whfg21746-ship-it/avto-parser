@@ -28,6 +28,9 @@ RECOMMENDATION_MAP = {
     "CHECK": "ПРОВЕРИТЬ ЛИЧНО",
 }
 
+# Per-user last scan timestamps for dynamic interval support
+_user_last_scan: dict[int, float] = {}
+
 
 def _format_alert(item: dict, ad_data: dict, verdict: dict) -> str:
     """Format the Telegram alert message."""
@@ -112,6 +115,20 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
         )
         return
 
+    # Check per-user scan interval
+    import time
+    user_interval_raw = await get_setting("scan_interval_seconds")
+    user_interval = int(user_interval_raw) if user_interval_raw else config.SCAN_INTERVAL
+    last_scan = _user_last_scan.get(user_id, 0)
+    elapsed = time.time() - last_scan
+    if last_scan > 0 and elapsed < user_interval:
+        logger.debug(
+            "User %d: skipping scan (%.0fs elapsed, interval=%ds)",
+            user_id, elapsed, user_interval,
+        )
+        return
+    _user_last_scan[user_id] = time.time()
+
     # Load proxies
     proxy_raw = await get_setting("proxy_list")
     try:
@@ -154,7 +171,9 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
             search_query = {"avito_url": item["avito_url"], "keyword": item["name"]}
 
             try:
-                listings = await api.search_by_keyword(search_query)
+                listings = await api.search_by_keyword(
+                    search_query, max_pages=config.SEARCH_PAGES,
+                )
             except Exception as e:
                 logger.error("Error scanning item '%s': %s", item["name"], e)
                 total_errors += 1
@@ -348,13 +367,34 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                     ad_url = details.get("url", "")
                     reply_markup = ad_alert_keyboard(ad_url) if ad_url else None
                     try:
-                        await bot.send_message(
-                            chat_id=chat_id,
-                            text=alert_text,
-                            reply_markup=reply_markup,
-                            disable_web_page_preview=True,
-                        )
-                        total_alerts += 1
+                        # Send photo with caption if available
+                        images = details.get("images", [])
+                        if images:
+                            try:
+                                await bot.send_photo(
+                                    chat_id=chat_id,
+                                    photo=images[0],
+                                    caption=alert_text[:1024],
+                                    reply_markup=reply_markup,
+                                )
+                                total_alerts += 1
+                            except Exception:
+                                # Fallback to text if photo fails
+                                await bot.send_message(
+                                    chat_id=chat_id,
+                                    text=alert_text,
+                                    reply_markup=reply_markup,
+                                    disable_web_page_preview=True,
+                                )
+                                total_alerts += 1
+                        else:
+                            await bot.send_message(
+                                chat_id=chat_id,
+                                text=alert_text,
+                                reply_markup=reply_markup,
+                                disable_web_page_preview=True,
+                            )
+                            total_alerts += 1
                     except Exception as e:
                         logger.error("Failed to send alert: %s", e)
                         total_errors += 1

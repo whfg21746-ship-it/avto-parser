@@ -148,6 +148,10 @@ def validate_ai_response(response: dict) -> dict | None:
     return response
 
 
+# Separate logger for AI request/response logging (can be directed to a file)
+ai_log = logging.getLogger("ai.requests")
+
+
 async def analyze_ad(item: dict, ad_data: dict) -> dict | None:
     """Send listing to GPT-4o-mini for analysis. Returns parsed verdict dict or None."""
     client = openai.AsyncOpenAI(api_key=config.OPENAI_API_KEY)
@@ -165,6 +169,14 @@ async def analyze_ad(item: dict, ad_data: dict) -> dict | None:
         custom_instructions=custom_instructions,
     )
 
+    ad_id = ad_data.get("ad_id", "?")
+
+    # Log full request for debugging
+    ai_log.debug(
+        "AI REQUEST ad_id=%s item=%s\n--- USER PROMPT ---\n%s\n--- END ---",
+        ad_id, item["name"], user_prompt,
+    )
+
     try:
         response = await client.chat.completions.create(
             model="gpt-4o-mini",
@@ -178,16 +190,32 @@ async def analyze_ad(item: dict, ad_data: dict) -> dict | None:
         )
 
         content = response.choices[0].message.content
+
+        # Log full response
+        ai_log.debug(
+            "AI RESPONSE ad_id=%s\n--- RAW ---\n%s\n--- END ---",
+            ad_id, content,
+        )
+
+        # Log token usage
+        usage = response.usage
+        if usage:
+            ai_log.info(
+                "AI USAGE ad_id=%s tokens: prompt=%d completion=%d total=%d",
+                ad_id, usage.prompt_tokens, usage.completion_tokens, usage.total_tokens,
+            )
+
         raw_verdict = json.loads(content)
         verdict = validate_ai_response(raw_verdict)
 
         if verdict is None:
-            logger.error("AI response failed validation for ad %s", ad_data.get("ad_id", "?"))
+            logger.error("AI response failed validation for ad %s", ad_id)
+            ai_log.warning("AI VALIDATION FAILED ad_id=%s raw=%s", ad_id, content)
             return None
 
         logger.info(
             "AI verdict for ad %s: %s (score %s, profit %s)",
-            ad_data.get("ad_id", "?"),
+            ad_id,
             verdict.get("recommendation"),
             verdict.get("score"),
             verdict.get("estimated_profit"),
@@ -196,10 +224,13 @@ async def analyze_ad(item: dict, ad_data: dict) -> dict | None:
 
     except json.JSONDecodeError as e:
         logger.error("Invalid JSON from GPT: %s", e)
+        ai_log.error("AI JSON ERROR ad_id=%s error=%s", ad_id, e)
         return None
     except openai.APIError as e:
         logger.error("OpenAI API error: %s", e)
+        ai_log.error("AI API ERROR ad_id=%s error=%s", ad_id, e)
         return None
     except Exception as e:
         logger.error("Unexpected error in AI analysis: %s", e)
+        ai_log.error("AI UNEXPECTED ERROR ad_id=%s error=%s", ad_id, e)
         return None

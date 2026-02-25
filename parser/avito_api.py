@@ -353,39 +353,9 @@ class AvitoAPI:
 
         return {}, current_url
 
-    async def search_by_keyword(self, search_query: dict) -> list[dict]:
-        """Search Avito by scraping the search results page.
-
-        Args:
-            search_query: dict with keys:
-                keyword     – search keyword (always present)
-                avito_url   – full Avito URL (optional, takes priority)
-                price_max   – maximum price filter (optional)
-        Returns:
-            list of dicts with: ad_id, title, price, url, city, params
-        """
-        avito_url = search_query.get("avito_url")
-        if avito_url:
-            url = self._set_page(avito_url, 1)
-        else:
-            url = self._build_search_url(
-                keyword=search_query["keyword"],
-                price_max=search_query.get("price_max"),
-            )
-
-        data, final_url = await self._fetch_page_with_redirects(url)
-        if not data:
-            logger.warning("No embedded JSON found on search page")
-            return []
-
+    def _parse_items_from_data(self, data: dict) -> list[dict]:
+        """Parse listings from extracted JSON data."""
         raw_items = self._find_catalog_items(data)
-        if not raw_items:
-            logger.warning(
-                "No items found in catalog data (url=%s, keys=%s)",
-                final_url, list(data.keys())[:10],
-            )
-            return []
-
         results = []
         for item in raw_items:
             if not isinstance(item, dict):
@@ -422,9 +392,75 @@ class AvitoAPI:
                 # Store full raw item for get_item_details()
                 "_raw": item,
             })
-
-        logger.info("Extracted %d listings from search page", len(results))
         return results
+
+    async def search_by_keyword(
+        self, search_query: dict, max_pages: int = 3,
+    ) -> list[dict]:
+        """Search Avito by scraping search results pages.
+
+        Args:
+            search_query: dict with keys:
+                keyword     – search keyword (always present)
+                avito_url   – full Avito URL (optional, takes priority)
+                price_max   – maximum price filter (optional)
+            max_pages: how many search pages to fetch (default 3)
+        Returns:
+            list of dicts with: ad_id, title, price, url, city, params
+        """
+        avito_url = search_query.get("avito_url")
+        if avito_url:
+            base_url = self._set_page(avito_url, 1)
+        else:
+            base_url = self._build_search_url(
+                keyword=search_query["keyword"],
+                price_max=search_query.get("price_max"),
+            )
+
+        all_results: list[dict] = []
+        seen_ids: set[str] = set()
+
+        for page_num in range(1, max_pages + 1):
+            page_url = self._set_page(base_url, page_num) if page_num > 1 else base_url
+
+            data, final_url = await self._fetch_page_with_redirects(page_url)
+            if not data:
+                if page_num == 1:
+                    logger.warning("No embedded JSON found on search page")
+                break
+
+            page_results = self._parse_items_from_data(data)
+            if not page_results:
+                if page_num == 1:
+                    logger.warning(
+                        "No items found in catalog data (url=%s, keys=%s)",
+                        final_url, list(data.keys())[:10],
+                    )
+                break
+
+            # Deduplicate across pages
+            new_count = 0
+            for item in page_results:
+                if item["ad_id"] not in seen_ids:
+                    seen_ids.add(item["ad_id"])
+                    all_results.append(item)
+                    new_count += 1
+
+            logger.info(
+                "Page %d: %d items (%d new, %d total)",
+                page_num, len(page_results), new_count, len(all_results),
+            )
+
+            # If page returned very few new items, no point fetching more
+            if new_count < 3:
+                break
+
+            # Delay between pages
+            if page_num < max_pages:
+                await asyncio.sleep(random.uniform(2.0, 5.0))
+
+        logger.info("Extracted %d total listings from %d page(s)", len(all_results), min(page_num, max_pages))
+        return all_results
 
     @staticmethod
     def _extract_seller_closed(text: str) -> int:

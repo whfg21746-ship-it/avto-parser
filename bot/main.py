@@ -9,6 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import config
 from bot.handlers import categories, items, settings, start
 from bot.middlewares.user_db import UserDBMiddleware
+from db.database import close_all_connections
 from parser.scheduler import run_scan_cycle
 
 logging.basicConfig(
@@ -45,18 +46,23 @@ async def main() -> None:
     dp.include_router(categories.router)
     dp.include_router(settings.router)
 
-    # Set up scheduler
+    # Set up scheduler — runs at a base tick rate, per-user intervals
+    # are checked inside the scan cycle itself.
+    tick_interval = min(config.SCAN_INTERVAL, 30)
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
         scheduled_scan,
         "interval",
-        seconds=config.SCAN_INTERVAL,
+        seconds=tick_interval,
         args=[bot],
         id="avito_scan",
         replace_existing=True,
     )
     scheduler.start()
-    logger.info("Scheduler started with interval %d seconds", config.SCAN_INTERVAL)
+    logger.info(
+        "Scheduler started with tick interval %d seconds (user intervals may vary)",
+        tick_interval,
+    )
 
     # CRITICAL: aiogram 3 does NOT call delete_webhook before polling.
     # Without this, if a previous polling session is still alive on Telegram's
@@ -75,6 +81,7 @@ async def main() -> None:
         await dp.start_polling(bot, close_bot_session=True)
     finally:
         scheduler.shutdown(wait=False)
+        await close_all_connections()
         logger.info("Bot stopped")
 
 

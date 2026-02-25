@@ -1,3 +1,4 @@
+import asyncio
 import contextvars
 import logging
 import os
@@ -28,6 +29,10 @@ INITIAL_SETTINGS = {
     "proxy_list": "[]",
 }
 
+# Connection pool: reuse connections per user instead of open/close each time
+_connection_pool: dict[int, aiosqlite.Connection] = {}
+_pool_lock = asyncio.Lock()
+
 
 def _db_path_for_user(user_id: int) -> str:
     """Return database file path for a specific user."""
@@ -36,15 +41,51 @@ def _db_path_for_user(user_id: int) -> str:
 
 
 async def get_db() -> aiosqlite.Connection:
-    """Open a connection to the current user's database."""
+    """Get a connection to the current user's database.
+
+    Connections are cached per user and reused across calls.
+    """
     user_id = current_user_id.get()
-    db_path = _db_path_for_user(user_id)
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    db = await aiosqlite.connect(db_path)
-    db.row_factory = aiosqlite.Row
-    await db.execute("PRAGMA journal_mode=WAL")
-    await db.execute("PRAGMA foreign_keys=ON")
-    return db
+
+    # Fast path: connection already cached and alive
+    if user_id in _connection_pool:
+        conn = _connection_pool[user_id]
+        try:
+            # Quick health check
+            await conn.execute("SELECT 1")
+            return conn
+        except Exception:
+            # Connection is dead, remove from pool
+            try:
+                await conn.close()
+            except Exception:
+                pass
+            del _connection_pool[user_id]
+
+    # Slow path: create new connection
+    async with _pool_lock:
+        # Double-check after acquiring lock
+        if user_id in _connection_pool:
+            return _connection_pool[user_id]
+
+        db_path = _db_path_for_user(user_id)
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        db = await aiosqlite.connect(db_path)
+        db.row_factory = aiosqlite.Row
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.execute("PRAGMA foreign_keys=ON")
+        _connection_pool[user_id] = db
+        return db
+
+
+async def close_all_connections() -> None:
+    """Close all cached connections. Call on shutdown."""
+    for user_id, conn in list(_connection_pool.items()):
+        try:
+            await conn.close()
+        except Exception:
+            pass
+    _connection_pool.clear()
 
 
 async def ensure_db_initialized() -> None:
@@ -54,84 +95,82 @@ async def ensure_db_initialized() -> None:
         return
 
     db = await get_db()
-    try:
-        # Check if this is old schema (has search_queries table) — needs full reset
-        cursor = await db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='search_queries'"
-        )
-        has_old_schema = await cursor.fetchone() is not None
 
-        if has_old_schema:
-            logger.info("User %d: old schema detected, dropping tables...", user_id)
-            for table in ("seen_ads", "items", "search_queries", "categories", "settings"):
-                await db.execute(f"DROP TABLE IF EXISTS {table}")
-            await db.commit()
+    # Check if this is old schema (has search_queries table) — needs full reset
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='search_queries'"
+    )
+    has_old_schema = await cursor.fetchone() is not None
 
-        # Apply clean schema
-        schema_sql = SCHEMA_PATH.read_text(encoding="utf-8")
-        await db.executescript(schema_sql)
-
-        # Migrate: add custom_prompt columns if missing
-        for table in ("categories", "items"):
-            cursor = await db.execute(f"PRAGMA table_info({table})")
-            columns = {row[1] for row in await cursor.fetchall()}
-            if "custom_prompt" not in columns:
-                await db.execute(
-                    f"ALTER TABLE {table} ADD COLUMN custom_prompt TEXT DEFAULT NULL"
-                )
-                logger.info("User %d: added custom_prompt to %s", user_id, table)
-
-        # Migrate: remove market_price column if present (recreate table)
-        cursor = await db.execute("PRAGMA table_info(items)")
-        columns = {row[1] for row in await cursor.fetchall()}
-        if "market_price" in columns:
-            logger.info("User %d: removing market_price column...", user_id)
-            await db.execute(
-                "CREATE TABLE items_new ("
-                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-                "category_id INTEGER REFERENCES categories(id) ON DELETE CASCADE, "
-                "name TEXT NOT NULL, "
-                "avito_url TEXT NOT NULL, "
-                "model_pattern TEXT, "
-                "threshold_price INTEGER NOT NULL, "
-                "custom_prompt TEXT DEFAULT NULL, "
-                "is_active BOOLEAN DEFAULT 1, "
-                "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-            )
-            await db.execute(
-                "INSERT INTO items_new "
-                "(id, category_id, name, avito_url, model_pattern, "
-                "threshold_price, custom_prompt, is_active, created_at) "
-                "SELECT id, category_id, name, avito_url, model_pattern, "
-                "threshold_price, custom_prompt, is_active, created_at "
-                "FROM items"
-            )
-            await db.execute("DROP TABLE items")
-            await db.execute("ALTER TABLE items_new RENAME TO items")
-            logger.info("User %d: market_price column removed", user_id)
-
+    if has_old_schema:
+        logger.info("User %d: old schema detected, dropping tables...", user_id)
+        for table in ("seen_ads", "items", "search_queries", "categories", "settings"):
+            await db.execute(f"DROP TABLE IF EXISTS {table}")
         await db.commit()
 
-        # Seed default settings if table is empty
-        cursor = await db.execute("SELECT COUNT(*) FROM settings")
-        row = await cursor.fetchone()
-        if row[0] == 0:
-            for key, value in INITIAL_SETTINGS.items():
-                await db.execute(
-                    "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
-                    (key, value),
-                )
-            # Auto-set telegram_chat_id to this user's ID
+    # Apply clean schema
+    schema_sql = SCHEMA_PATH.read_text(encoding="utf-8")
+    await db.executescript(schema_sql)
+
+    # Migrate: add custom_prompt columns if missing
+    for table in ("categories", "items"):
+        cursor = await db.execute(f"PRAGMA table_info({table})")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "custom_prompt" not in columns:
+            await db.execute(
+                f"ALTER TABLE {table} ADD COLUMN custom_prompt TEXT DEFAULT NULL"
+            )
+            logger.info("User %d: added custom_prompt to %s", user_id, table)
+
+    # Migrate: remove market_price column if present (recreate table)
+    cursor = await db.execute("PRAGMA table_info(items)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    if "market_price" in columns:
+        logger.info("User %d: removing market_price column...", user_id)
+        await db.execute(
+            "CREATE TABLE items_new ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "category_id INTEGER REFERENCES categories(id) ON DELETE CASCADE, "
+            "name TEXT NOT NULL, "
+            "avito_url TEXT NOT NULL, "
+            "model_pattern TEXT, "
+            "threshold_price INTEGER NOT NULL, "
+            "custom_prompt TEXT DEFAULT NULL, "
+            "is_active BOOLEAN DEFAULT 1, "
+            "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        )
+        await db.execute(
+            "INSERT INTO items_new "
+            "(id, category_id, name, avito_url, model_pattern, "
+            "threshold_price, custom_prompt, is_active, created_at) "
+            "SELECT id, category_id, name, avito_url, model_pattern, "
+            "threshold_price, custom_prompt, is_active, created_at "
+            "FROM items"
+        )
+        await db.execute("DROP TABLE items")
+        await db.execute("ALTER TABLE items_new RENAME TO items")
+        logger.info("User %d: market_price column removed", user_id)
+
+    await db.commit()
+
+    # Seed default settings if table is empty
+    cursor = await db.execute("SELECT COUNT(*) FROM settings")
+    row = await cursor.fetchone()
+    if row[0] == 0:
+        for key, value in INITIAL_SETTINGS.items():
             await db.execute(
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
-                ("telegram_chat_id", str(user_id)),
+                (key, value),
             )
-            logger.info("User %d: seeded default settings", user_id)
+        # Auto-set telegram_chat_id to this user's ID
+        await db.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+            ("telegram_chat_id", str(user_id)),
+        )
+        logger.info("User %d: seeded default settings", user_id)
 
-        await db.commit()
-        logger.info("User %d: database initialized", user_id)
-    finally:
-        await db.close()
+    await db.commit()
+    logger.info("User %d: database initialized", user_id)
 
     _initialized_users.add(user_id)
 
