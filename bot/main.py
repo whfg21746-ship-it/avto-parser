@@ -3,6 +3,7 @@ import fcntl
 import logging
 import os
 import sys
+from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -38,12 +39,27 @@ def ensure_single_instance() -> None:
         sys.exit(1)
 
 
-async def scheduled_scan(bot: Bot) -> None:
-    """Wrapper for the scan cycle called by APScheduler."""
+async def scheduled_scan(bot: Bot, scheduler: AsyncIOScheduler) -> None:
+    """Wrapper for the scan cycle called by APScheduler.
+
+    Uses self-rescheduling instead of a fixed interval so the next scan
+    starts only *after* the current one finishes, eliminating overlaps
+    and 'maximum number of running instances reached' warnings.
+    """
     try:
         await run_scan_cycle(bot)
     except Exception as e:
         logger.error("Scheduled scan error: %s", e)
+    finally:
+        tick = min(config.SCAN_INTERVAL, 30)
+        scheduler.add_job(
+            scheduled_scan,
+            "date",
+            run_date=datetime.now() + timedelta(seconds=tick),
+            args=[bot, scheduler],
+            id="avito_scan",
+            replace_existing=True,
+        )
 
 
 async def main() -> None:
@@ -67,21 +83,21 @@ async def main() -> None:
     dp.include_router(settings.router)
     dp.include_router(stats.router)
 
-    # Set up scheduler — runs at a base tick rate, per-user intervals
-    # are checked inside the scan cycle itself.
+    # Set up scheduler — first scan runs immediately, subsequent scans
+    # are rescheduled after each completion (self-rescheduling pattern).
     tick_interval = min(config.SCAN_INTERVAL, 30)
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
         scheduled_scan,
-        "interval",
-        seconds=tick_interval,
-        args=[bot],
+        "date",
+        run_date=datetime.now() + timedelta(seconds=5),
+        args=[bot, scheduler],
         id="avito_scan",
         replace_existing=True,
     )
     scheduler.start()
     logger.info(
-        "Scheduler started with tick interval %d seconds (user intervals may vary)",
+        "Scheduler started (self-rescheduling, base tick %d seconds)",
         tick_interval,
     )
 
