@@ -10,6 +10,7 @@ from db.database import current_user_id, ensure_db_initialized, get_all_user_ids
 from db.models import (
     get_active_items,
     get_setting,
+    has_seen_ads,
     is_ad_seen,
     save_seen_ad,
 )
@@ -151,6 +152,25 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
 
             logger.info("Item '%s': %d listings found", item["name"], len(listings))
 
+            # Baseline scan: first time seeing this item — mark all
+            # current listings as seen so we only alert on NEW ones.
+            if not await has_seen_ads(item["id"]):
+                logger.info(
+                    "First scan for item '%s': saving %d existing ads as baseline",
+                    item["name"], len(listings),
+                )
+                for listing in listings:
+                    await save_seen_ad(
+                        ad_id=listing["ad_id"],
+                        item_id=item["id"],
+                        price=listing.get("price", 0),
+                        title=listing.get("title", ""),
+                        url=listing.get("url", ""),
+                        skip_reason="baseline",
+                    )
+                await api.delay()
+                continue
+
             for listing in listings:
                 ad_id = listing["ad_id"]
 
@@ -192,10 +212,10 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                     )
                     continue
 
-                # (e) Seller filter: type + closed items count
+                # (e) Seller filter: type + active items count
                 seller_rejected, seller_reason = should_reject_seller(
                     seller_type=details.get("seller_type", "private"),
-                    seller_closed_items=details.get("seller_closed_items", 0),
+                    seller_active_items=details.get("seller_active_items", 0),
                     max_seller_items=max_seller_items,
                 )
                 if seller_rejected:

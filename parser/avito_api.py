@@ -536,21 +536,47 @@ class AvitoAPI:
         location = raw_item.get("location", {})
         city = location.get("name", "") if isinstance(location, dict) else ""
 
-        # Seller info from closedItemsText ("112 завершённых объявлений")
-        closed_text = raw_item.get("closedItemsText", "")
-        seller_closed = self._extract_seller_closed(closed_text)
-
         # Seller type from userLogo
         seller_type = "private"
         user_logo = raw_item.get("userLogo", {})
         if isinstance(user_logo, dict) and user_logo.get("developerId"):
             seller_type = "shop"
 
+        # Seller active items count — try multiple possible field names
+        seller_active_items = 0
+        for field in ("itemsText", "activeItemsText", "sellerItemsText"):
+            text = raw_item.get(field, "")
+            if text:
+                seller_active_items = self._extract_seller_closed(text)
+                break
+
+        # Also check inside userLogo for items count
+        if not seller_active_items and isinstance(user_logo, dict):
+            for field in ("itemsCount", "activeItems", "totalItems"):
+                val = user_logo.get(field)
+                if isinstance(val, (int, float)) and val > 0:
+                    seller_active_items = int(val)
+                    break
+
+        if not seller_active_items:
+            # Log available keys once per ad for debugging
+            seller_keys = [
+                k for k in raw_item
+                if any(w in k.lower() for w in ("item", "seller", "user", "closed", "active", "count"))
+            ]
+            if seller_keys:
+                logger.debug(
+                    "ad_id=%s seller-related keys: %s", ad_id, seller_keys,
+                )
+
         # Images
         images = self._extract_images(raw_item)
 
         # Params
         params_str = self._extract_params_str(raw_item)
+
+        # Sort timestamp (for freshness filtering)
+        sort_timestamp = raw_item.get("sortTimeStamp", 0)
 
         return {
             "ad_id": ad_id,
@@ -560,7 +586,8 @@ class AvitoAPI:
             "url": full_url,
             "city": city,
             "seller_type": seller_type,
-            "seller_closed_items": seller_closed,
+            "seller_active_items": seller_active_items,
+            "sort_timestamp": sort_timestamp,
             "images": images,
             "params_str": params_str,
         }

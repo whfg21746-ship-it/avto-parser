@@ -250,6 +250,19 @@ async def delete_item(item_id: int) -> None:
 
 # --- Seen Ads ---
 
+async def has_seen_ads(item_id: int) -> bool:
+    """Check if there are any seen ads for this item (first scan detection)."""
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT 1 FROM seen_ads WHERE item_id = ? LIMIT 1", (item_id,)
+        )
+        row = await cursor.fetchone()
+        return row is not None
+    finally:
+        await db.close()
+
+
 async def is_ad_seen(ad_id: str) -> bool:
     db = await get_db()
     try:

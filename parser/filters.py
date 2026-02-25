@@ -57,17 +57,18 @@ def should_instant_reject(title: str, description: str) -> tuple[bool, str]:
 
 def should_reject_seller(
     seller_type: str,
-    seller_closed_items: int,
+    seller_active_items: int,
     max_seller_items: int,
 ) -> tuple[bool, str]:
     """Check if seller should be rejected.
 
+    Filters by number of currently active listings (not closed/completed).
     Returns (should_reject, reason).
     """
     if seller_type == "shop":
         return True, "Company seller, not private"
 
-    if seller_closed_items > max_seller_items:
-        return True, f"Reseller: {seller_closed_items} closed ads (max: {max_seller_items})"
+    if seller_active_items > max_seller_items:
+        return True, f"Reseller: {seller_active_items} active ads (max: {max_seller_items})"
 
     return False, ""
