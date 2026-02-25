@@ -203,6 +203,8 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
     chat_id = await get_setting("telegram_chat_id") or str(user_id)
     max_seller_str = await get_setting("max_seller_items") or str(config.MAX_SELLER_ITEMS)
     max_seller_items = int(max_seller_str)
+    max_seller_cat_str = await get_setting("max_seller_category_items") or str(config.MAX_SELLER_CATEGORY_ITEMS)
+    max_seller_category_items = int(max_seller_cat_str)
 
     # User preferences for alert filtering
     send_check_raw = await get_setting("send_check_verdicts")
@@ -263,7 +265,7 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                         price=listing.get("price", 0),
                         title=listing.get("title", ""),
                         url=listing.get("url", ""),
-                        skip_reason="baseline",
+                        skip_reason="existed_before_scan_start",
                     )
                 await api.delay()
                 continue
@@ -322,6 +324,8 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                     seller_type=details.get("seller_type", "private"),
                     seller_active_items=details.get("seller_active_items", 0),
                     max_seller_items=max_seller_items,
+                    seller_category_items=details.get("seller_category_items", 0),
+                    max_seller_category_items=max_seller_category_items,
                 )
                 if seller_rejected:
                     logger.info("[SKIP] ad_id=%s reason=%r", ad_id, seller_reason)
@@ -342,13 +346,27 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                     extra = await api.fetch_ad_extra(ad_url)
                     if extra.get("description"):
                         details["description"] = extra["description"]
+                    # Update seller data from ad page
+                    if extra.get("seller_type") and not details.get("seller_type"):
+                        details["seller_type"] = extra["seller_type"]
                     if extra.get("seller_active_items") and not details.get("seller_active_items"):
                         details["seller_active_items"] = extra["seller_active_items"]
-                        # Re-check seller filter with updated data
+                    if extra.get("seller_category_items"):
+                        details["seller_category_items"] = extra["seller_category_items"]
+
+                    # Re-check seller filter with updated data from ad page
+                    has_new_seller_data = (
+                        extra.get("seller_active_items")
+                        or extra.get("seller_category_items")
+                        or extra.get("seller_type")
+                    )
+                    if has_new_seller_data:
                         seller_rej2, seller_rsn2 = should_reject_seller(
                             seller_type=details.get("seller_type", "private"),
-                            seller_active_items=details["seller_active_items"],
+                            seller_active_items=details.get("seller_active_items", 0),
                             max_seller_items=max_seller_items,
+                            seller_category_items=details.get("seller_category_items", 0),
+                            max_seller_category_items=max_seller_category_items,
                         )
                         if seller_rej2:
                             logger.info("[SKIP] ad_id=%s reason=%r (ad page)", ad_id, seller_rsn2)

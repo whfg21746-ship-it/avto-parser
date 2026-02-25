@@ -16,7 +16,8 @@ except (json.JSONDecodeError, TypeError):
     PROXY_LIST = []
 
 SCAN_INTERVAL: int = int(os.getenv("SCAN_INTERVAL", "60"))
-MAX_SELLER_ITEMS: int = int(os.getenv("MAX_SELLER_ITEMS", "10"))
+MAX_SELLER_ITEMS: int = int(os.getenv("MAX_SELLER_ITEMS", "15"))
+MAX_SELLER_CATEGORY_ITEMS: int = int(os.getenv("MAX_SELLER_CATEGORY_ITEMS", "3"))
 DATABASE_PATH: str = os.getenv("DATABASE_PATH", "./data/flipper.db")
 SEARCH_PAGES: int = int(os.getenv("SEARCH_PAGES", "3"))
 

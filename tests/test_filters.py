@@ -76,12 +76,53 @@ class TestSellerReject:
     def test_reject_shop(self):
         rejected, reason = should_reject_seller("shop", 0, 10)
         assert rejected
-        assert "Company" in reason
+        assert "Коммерческий" in reason
+
+    def test_reject_company(self):
+        rejected, reason = should_reject_seller("company", 0, 10)
+        assert rejected
+        assert "Коммерческий" in reason
 
     def test_reject_high_active_items(self):
-        rejected, reason = should_reject_seller("private", 15, 10)
+        rejected, reason = should_reject_seller("private", 20, 15)
         assert rejected
-        assert "15" in reason
+        assert "20" in reason
+        assert "перекуп" in reason.lower()
+
+    def test_reject_category_items(self):
+        """Seller with >3 ads in the same category should be rejected."""
+        rejected, reason = should_reject_seller(
+            "private", 5, 15,
+            seller_category_items=4, max_seller_category_items=3,
+        )
+        assert rejected
+        assert "4" in reason
+        assert "категори" in reason.lower()
+
+    def test_category_items_zero_passes(self):
+        """Zero category items (data unavailable) should pass."""
+        rejected, _ = should_reject_seller(
+            "private", 5, 15,
+            seller_category_items=0, max_seller_category_items=3,
+        )
+        assert not rejected
+
+    def test_category_items_exact_threshold(self):
+        """Exactly at category threshold should pass (only > triggers)."""
+        rejected, _ = should_reject_seller(
+            "private", 5, 15,
+            seller_category_items=3, max_seller_category_items=3,
+        )
+        assert not rejected
+
+    def test_category_check_before_total(self):
+        """Category check should trigger before total items check."""
+        rejected, reason = should_reject_seller(
+            "private", 20, 15,
+            seller_category_items=5, max_seller_category_items=3,
+        )
+        assert rejected
+        assert "категори" in reason.lower()
 
     def test_allow_private_few_items(self):
         rejected, _ = should_reject_seller("private", 3, 10)

@@ -83,16 +83,25 @@ def should_reject_seller(
     seller_type: str,
     seller_active_items: int,
     max_seller_items: int,
+    seller_category_items: int = 0,
+    max_seller_category_items: int = 3,
 ) -> tuple[bool, str]:
     """Check if seller should be rejected.
 
-    Filters by number of currently active listings (not closed/completed).
+    Filters:
+    - Commercial sellers (shop/company type)
+    - Too many active ads in the same category (reseller signal)
+    - Too many active ads total (reseller signal)
+
     Returns (should_reject, reason).
     """
-    if seller_type == "shop":
-        return True, "Company seller, not private"
+    if seller_type in ("shop", "company"):
+        return True, "Коммерческий продавец"
 
-    if seller_active_items > max_seller_items:
-        return True, f"Reseller: {seller_active_items} active ads (max: {max_seller_items})"
+    if seller_category_items > 0 and seller_category_items > max_seller_category_items:
+        return True, f"Перекуп: {seller_category_items} объявлений в категории"
+
+    if seller_active_items > 0 and seller_active_items > max_seller_items:
+        return True, f"Возможный перекуп: {seller_active_items} объявлений"
 
     return False, ""

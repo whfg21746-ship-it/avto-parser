@@ -25,6 +25,7 @@ INITIAL_SETTINGS = {
     "city_slug": "rossiya",
     "scan_interval_seconds": str(config.SCAN_INTERVAL),
     "max_seller_items": str(config.MAX_SELLER_ITEMS),
+    "max_seller_category_items": str(config.MAX_SELLER_CATEGORY_ITEMS),
     "monitoring_enabled": "true",
     "proxy_list": "[]",
 }

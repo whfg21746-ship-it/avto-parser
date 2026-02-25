@@ -207,6 +207,64 @@ class TestSetPage:
         assert "p=" not in result
 
 
+class TestEnsureSortByDate:
+    def test_adds_sort_param(self):
+        url = "https://www.avito.ru/all/telefony?q=iphone"
+        result = AvitoAPI._ensure_sort_by_date(url)
+        assert "s=104" in result
+        assert "q=iphone" in result
+
+    def test_preserves_existing_sort(self):
+        url = "https://www.avito.ru/all/telefony?q=iphone&s=1"
+        result = AvitoAPI._ensure_sort_by_date(url)
+        assert "s=1" in result
+        assert "s=104" not in result
+
+    def test_no_query_params(self):
+        url = "https://www.avito.ru/all/telefony/mobilnye_telefony/apple-ASgBAgICAkS0wA3OqzmwwQ"
+        result = AvitoAPI._ensure_sort_by_date(url)
+        assert "s=104" in result
+
+
+class TestExtractSellerData:
+    def test_total_items_count(self):
+        data = {"seller": {"itemsCount": 25}}
+        result = AvitoAPI._extract_seller_data_from_ad_data(data)
+        assert result["active_items"] == 25
+
+    def test_category_items_count(self):
+        data = {"seller": {"itemsCount": 25, "categoryItemsCount": 5}}
+        result = AvitoAPI._extract_seller_data_from_ad_data(data)
+        assert result["active_items"] == 25
+        assert result["category_items"] == 5
+
+    def test_seller_type_shop(self):
+        data = {"seller": {"type": "магазин"}}
+        result = AvitoAPI._extract_seller_data_from_ad_data(data)
+        assert result["seller_type"] == "shop"
+
+    def test_seller_type_developer_id(self):
+        data = {"seller": {"developerId": 12345}}
+        result = AvitoAPI._extract_seller_data_from_ad_data(data)
+        assert result["seller_type"] == "shop"
+
+    def test_empty_data(self):
+        result = AvitoAPI._extract_seller_data_from_ad_data({})
+        assert result["active_items"] == 0
+        assert result["category_items"] == 0
+        assert result["seller_type"] == ""
+
+    def test_text_items_count(self):
+        data = {"seller": {"itemsText": "47 объявлений"}}
+        result = AvitoAPI._extract_seller_data_from_ad_data(data)
+        assert result["active_items"] == 47
+
+    def test_nested_data_seller(self):
+        data = {"data": {"seller": {"activeItems": 12}}}
+        result = AvitoAPI._extract_seller_data_from_ad_data(data)
+        assert result["active_items"] == 12
+
+
 class TestExtractDescriptionFromAdData:
     def test_item_path(self):
         data = {"item": {"description": "Great phone, barely used, comes with box"}}

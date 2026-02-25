@@ -314,6 +314,20 @@ class AvitoAPI:
              parts.params, new_query, parts.fragment)
         )
 
+    @staticmethod
+    def _ensure_sort_by_date(url: str) -> str:
+        """Add s=104 (sort by date, newest first) if not already present."""
+        parts = urlparse(url)
+        query = parse_qs(parts.query)
+        if "s" not in query:
+            query["s"] = ["104"]
+            new_query = urlencode(query, doseq=True)
+            return urlunparse(
+                (parts.scheme, parts.netloc, parts.path,
+                 parts.params, new_query, parts.fragment)
+            )
+        return url
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -425,7 +439,7 @@ class AvitoAPI:
         """
         avito_url = search_query.get("avito_url")
         if avito_url:
-            base_url = self._set_page(avito_url, 1)
+            base_url = self._ensure_sort_by_date(self._set_page(avito_url, 1))
         else:
             base_url = self._build_search_url(
                 keyword=search_query["keyword"],
@@ -717,11 +731,17 @@ class AvitoAPI:
         return ""
 
     async def fetch_ad_extra(self, ad_url: str) -> dict:
-        """Fetch ad page and extract description + seller active items.
+        """Fetch ad page and extract description + seller data.
 
-        Returns dict with 'description' and 'seller_active_items' keys.
+        Returns dict with 'description', 'seller_active_items',
+        'seller_category_items', and 'seller_type' keys.
         """
-        result = {"description": "", "seller_active_items": 0}
+        result = {
+            "description": "",
+            "seller_active_items": 0,
+            "seller_category_items": 0,
+            "seller_type": "",
+        }
         if not ad_url:
             return result
 
@@ -735,45 +755,86 @@ class AvitoAPI:
 
         result["description"] = self._extract_description_from_ad_data(data)
 
-        # Try to extract seller active items from ad page
-        seller_count = self._extract_seller_items_from_ad_data(data)
-        if seller_count > 0:
-            result["seller_active_items"] = seller_count
+        # Extract seller data from ad page
+        seller_data = self._extract_seller_data_from_ad_data(data)
+        result["seller_active_items"] = seller_data.get("active_items", 0)
+        result["seller_category_items"] = seller_data.get("category_items", 0)
+        if seller_data.get("seller_type"):
+            result["seller_type"] = seller_data["seller_type"]
 
         return result
 
     @staticmethod
-    def _extract_seller_items_from_ad_data(data: dict) -> int:
-        """Try to extract seller's active items count from the ad detail page."""
-        for key in ("seller", "sellerInfo", "userInfo", "user"):
-            seller = data.get(key, {})
-            if not isinstance(seller, dict):
-                continue
-            for field in ("itemsCount", "activeItems", "totalItems",
-                          "itemsActive"):
-                val = seller.get(field)
-                if isinstance(val, (int, float)) and val > 0:
-                    return int(val)
-            # Try text field: "112 объявлений"
-            for field in ("itemsText", "activeItemsText"):
-                text = seller.get(field, "")
-                if text:
-                    match = re.search(r"(\d+)", str(text))
-                    if match:
-                        return int(match.group(1))
+    def _extract_seller_data_from_ad_data(data: dict) -> dict:
+        """Extract seller data from the ad detail page.
 
-        # Check nested data.seller
+        Returns dict with keys:
+          - active_items: total active listings (int)
+          - category_items: active listings in the same category (int)
+          - seller_type: "shop", "company", or "" (str)
+        """
+        result = {"active_items": 0, "category_items": 0, "seller_type": ""}
+
+        # Collect all seller-like dicts from known paths
+        seller_dicts: list[dict] = []
+        for key in ("seller", "sellerInfo", "userInfo", "user"):
+            obj = data.get(key, {})
+            if isinstance(obj, dict) and obj:
+                seller_dicts.append(obj)
         inner = data.get("data", {})
         if isinstance(inner, dict):
             for key in ("seller", "sellerInfo"):
-                seller = inner.get(key, {})
-                if isinstance(seller, dict):
-                    for field in ("itemsCount", "activeItems", "totalItems"):
-                        val = seller.get(field)
-                        if isinstance(val, (int, float)) and val > 0:
-                            return int(val)
+                obj = inner.get(key, {})
+                if isinstance(obj, dict) and obj:
+                    seller_dicts.append(obj)
 
-        return 0
+        for seller in seller_dicts:
+            # Total active items
+            if result["active_items"] == 0:
+                for field in ("itemsCount", "activeItems", "totalItems",
+                              "itemsActive"):
+                    val = seller.get(field)
+                    if isinstance(val, (int, float)) and val > 0:
+                        result["active_items"] = int(val)
+                        break
+                if result["active_items"] == 0:
+                    for field in ("itemsText", "activeItemsText"):
+                        text = seller.get(field, "")
+                        if text:
+                            match = re.search(r"(\d+)", str(text))
+                            if match:
+                                result["active_items"] = int(match.group(1))
+                                break
+
+            # Category-specific items count
+            if result["category_items"] == 0:
+                for field in ("categoryItemsCount", "sameCategoryItems",
+                              "categoryItems", "itemsInCategory"):
+                    val = seller.get(field)
+                    if isinstance(val, (int, float)) and val > 0:
+                        result["category_items"] = int(val)
+                        break
+                if result["category_items"] == 0:
+                    for field in ("categoryItemsText",):
+                        text = seller.get(field, "")
+                        if text:
+                            match = re.search(r"(\d+)", str(text))
+                            if match:
+                                result["category_items"] = int(match.group(1))
+                                break
+
+            # Seller type detection
+            if not result["seller_type"]:
+                stype = seller.get("type", "") or seller.get("sellerType", "")
+                if isinstance(stype, str) and stype:
+                    stype_lower = stype.lower()
+                    if any(w in stype_lower for w in ("shop", "магазин", "компания", "company")):
+                        result["seller_type"] = "shop"
+                # Also check for developerId (shop indicator)
+                if not result["seller_type"] and seller.get("developerId"):
+                    result["seller_type"] = "shop"
+
+        return result
 
     async def delay(self) -> None:
         """Random delay between requests."""
