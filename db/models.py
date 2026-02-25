@@ -287,6 +287,18 @@ async def get_user_stats() -> dict:
     }
 
 
+async def get_alerted_ads(limit: int = 1000) -> list[dict]:
+    """Get seen_ads that were alerted (for export)."""
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT * FROM seen_ads WHERE was_alerted = 1 "
+        "ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    )
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
 async def delete_old_seen_ads(days: int = 30) -> int:
     """Delete seen_ads older than N days. Returns number deleted."""
     db = await get_db()

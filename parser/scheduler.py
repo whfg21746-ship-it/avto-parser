@@ -18,7 +18,7 @@ from db.models import (
 import config
 from parser.avito_api import AvitoAPI
 from parser.cookie_provider import get_cookie_provider
-from parser.filters import should_instant_reject, should_reject_seller
+from parser.filters import should_instant_reject, should_reject_model_pattern, should_reject_seller
 from parser.proxy_manager import ProxyManager
 
 logger = logging.getLogger(__name__)
@@ -250,6 +250,24 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                         skip_reason=reason,
                     )
                     continue
+
+                # (c2) Model pattern check
+                model_pattern = item.get("model_pattern")
+                if model_pattern:
+                    pattern_rejected, pattern_reason = should_reject_model_pattern(
+                        listing["title"], listing.get("params", ""), model_pattern,
+                    )
+                    if pattern_rejected:
+                        logger.info("[SKIP] ad_id=%s reason=%r", ad_id, pattern_reason)
+                        total_filtered += 1
+                        await save_seen_ad(
+                            ad_id=ad_id, item_id=item["id"],
+                            price=listing.get("price", 0),
+                            title=listing.get("title", ""),
+                            url=listing.get("url", ""),
+                            skip_reason=pattern_reason,
+                        )
+                        continue
 
                 # (d) Extract full details from search result data
                 raw_item = listing.get("_raw", {})

@@ -7,7 +7,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import config
-from bot.handlers import categories, items, settings, start
+from bot.handlers import categories, items, settings, start, stats
 from bot.middlewares.user_db import UserDBMiddleware
 from db.database import close_all_connections
 from parser.scheduler import run_scan_cycle
@@ -45,6 +45,7 @@ async def main() -> None:
     dp.include_router(items.router)
     dp.include_router(categories.router)
     dp.include_router(settings.router)
+    dp.include_router(stats.router)
 
     # Set up scheduler — runs at a base tick rate, per-user intervals
     # are checked inside the scan cycle itself.

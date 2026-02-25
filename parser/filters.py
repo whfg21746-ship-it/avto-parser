@@ -55,6 +55,30 @@ def should_instant_reject(title: str, description: str) -> tuple[bool, str]:
     return False, ""
 
 
+def should_reject_model_pattern(
+    title: str, params_str: str, model_pattern: str | None,
+) -> tuple[bool, str]:
+    """Check if ad matches the required model_pattern regex.
+
+    If model_pattern is set and neither the title nor params match it,
+    the ad is rejected. If model_pattern is None/empty, always passes.
+
+    Returns (should_reject, reason).
+    """
+    if not model_pattern:
+        return False, ""
+
+    text = f"{title} {params_str}".lower()
+    try:
+        if re.search(model_pattern, text, re.IGNORECASE):
+            return False, ""
+    except re.error as e:
+        logger.warning("Invalid model_pattern regex %r: %s", model_pattern, e)
+        return False, ""
+
+    return True, f"Model pattern '{model_pattern}' not matched"
+
+
 def should_reject_seller(
     seller_type: str,
     seller_active_items: int,

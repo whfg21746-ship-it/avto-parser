@@ -16,9 +16,10 @@ def main_menu(monitoring_active: bool = False, has_items: bool = False) -> Inlin
         ])
         rows.append([
             InlineKeyboardButton(text="\U0001f4c1 Категории", callback_data="categories_list"),
-            InlineKeyboardButton(text="\u2699\ufe0f Настройки", callback_data="settings"),
+            InlineKeyboardButton(text="\U0001f4ca Статистика", callback_data="stats"),
         ])
         rows.append([
+            InlineKeyboardButton(text="\u2699\ufe0f Настройки", callback_data="settings"),
             InlineKeyboardButton(text=toggle_text, callback_data=toggle_cb),
         ])
     else:
