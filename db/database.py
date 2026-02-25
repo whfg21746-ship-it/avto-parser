@@ -1,3 +1,4 @@
+import contextvars
 import logging
 import os
 from pathlib import Path
@@ -10,19 +11,34 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
+# Per-user context: set by middleware for handlers, set manually for scheduler
+current_user_id: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "current_user_id"
+)
+
+# Track which users have had their DB initialized this session
+_initialized_users: set[int] = set()
+
 INITIAL_SETTINGS = {
     "city": "",
     "city_slug": "rossiya",
     "scan_interval_seconds": str(config.SCAN_INTERVAL),
     "max_seller_items": str(config.MAX_SELLER_ITEMS),
     "monitoring_enabled": "true",
-    "telegram_chat_id": config.TELEGRAM_CHAT_ID,
     "proxy_list": "[]",
 }
 
 
+def _db_path_for_user(user_id: int) -> str:
+    """Return database file path for a specific user."""
+    base_dir = os.path.dirname(config.DATABASE_PATH)
+    return os.path.join(base_dir, f"user_{user_id}", "flipper.db")
+
+
 async def get_db() -> aiosqlite.Connection:
-    db_path = config.DATABASE_PATH
+    """Open a connection to the current user's database."""
+    user_id = current_user_id.get()
+    db_path = _db_path_for_user(user_id)
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     db = await aiosqlite.connect(db_path)
     db.row_factory = aiosqlite.Row
@@ -31,7 +47,12 @@ async def get_db() -> aiosqlite.Connection:
     return db
 
 
-async def init_db() -> None:
+async def ensure_db_initialized() -> None:
+    """Initialize the database for the current user if not done yet."""
+    user_id = current_user_id.get()
+    if user_id in _initialized_users:
+        return
+
     db = await get_db()
     try:
         # Check if this is old schema (has search_queries table) — needs full reset
@@ -41,12 +62,9 @@ async def init_db() -> None:
         has_old_schema = await cursor.fetchone() is not None
 
         if has_old_schema:
-            logger.info("Detected old schema, dropping all tables for clean start...")
-            await db.execute("DROP TABLE IF EXISTS seen_ads")
-            await db.execute("DROP TABLE IF EXISTS items")
-            await db.execute("DROP TABLE IF EXISTS search_queries")
-            await db.execute("DROP TABLE IF EXISTS categories")
-            await db.execute("DROP TABLE IF EXISTS settings")
+            logger.info("User %d: old schema detected, dropping tables...", user_id)
+            for table in ("seen_ads", "items", "search_queries", "categories", "settings"):
+                await db.execute(f"DROP TABLE IF EXISTS {table}")
             await db.commit()
 
         # Apply clean schema
@@ -61,13 +79,13 @@ async def init_db() -> None:
                 await db.execute(
                     f"ALTER TABLE {table} ADD COLUMN custom_prompt TEXT DEFAULT NULL"
                 )
-                logger.info("Added custom_prompt column to %s", table)
+                logger.info("User %d: added custom_prompt to %s", user_id, table)
 
         # Migrate: remove market_price column if present (recreate table)
         cursor = await db.execute("PRAGMA table_info(items)")
         columns = {row[1] for row in await cursor.fetchall()}
         if "market_price" in columns:
-            logger.info("Removing market_price column from items table...")
+            logger.info("User %d: removing market_price column...", user_id)
             await db.execute(
                 "CREATE TABLE items_new ("
                 "id INTEGER PRIMARY KEY AUTOINCREMENT, "
@@ -90,7 +108,7 @@ async def init_db() -> None:
             )
             await db.execute("DROP TABLE items")
             await db.execute("ALTER TABLE items_new RENAME TO items")
-            logger.info("Removed market_price column from items table")
+            logger.info("User %d: market_price column removed", user_id)
 
         await db.commit()
 
@@ -103,9 +121,32 @@ async def init_db() -> None:
                     "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                     (key, value),
                 )
-            logger.info("Seeded default settings")
+            # Auto-set telegram_chat_id to this user's ID
+            await db.execute(
+                "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+                ("telegram_chat_id", str(user_id)),
+            )
+            logger.info("User %d: seeded default settings", user_id)
 
         await db.commit()
-        logger.info("Database initialized (clean slate)")
+        logger.info("User %d: database initialized", user_id)
     finally:
         await db.close()
+
+    _initialized_users.add(user_id)
+
+
+def get_all_user_ids() -> list[int]:
+    """Discover all user IDs by scanning the data directory."""
+    base_dir = os.path.dirname(config.DATABASE_PATH)
+    if not os.path.exists(base_dir):
+        return []
+    user_ids = []
+    for name in os.listdir(base_dir):
+        if name.startswith("user_") and os.path.isdir(os.path.join(base_dir, name)):
+            try:
+                uid = int(name.split("_", 1)[1])
+                user_ids.append(uid)
+            except (ValueError, IndexError):
+                pass
+    return user_ids

@@ -5,6 +5,7 @@ from aiogram import Bot
 
 from ai.analyzer import analyze_ad
 from bot.keyboards.menus import ad_alert_keyboard
+from db.database import current_user_id, ensure_db_initialized, get_all_user_ids
 from db.models import (
     get_active_items,
     get_setting,
@@ -38,7 +39,6 @@ def _format_alert(item: dict, ad_data: dict, verdict: dict) -> str:
 
     ad_price = ad_data.get("price", 0)
     city = ad_data.get("city", "N/A")
-    url = ad_data.get("url", "")
 
     if red_flags:
         header = f"\U0001f6a9 {item['name']} за {ad_price:,}\u20bd"
@@ -75,10 +75,27 @@ def _format_alert(item: dict, ad_data: dict, verdict: dict) -> str:
 
 
 async def run_scan_cycle(bot: Bot) -> None:
-    """Execute one full scan cycle: iterate over each active item's URL."""
+    """Execute scan cycle for all registered users."""
+    user_ids = get_all_user_ids()
+    if not user_ids:
+        logger.debug("No users found, skipping scan cycle")
+        return
+
+    for uid in user_ids:
+        token = current_user_id.set(uid)
+        try:
+            await ensure_db_initialized()
+            await _run_user_scan(bot, uid)
+        except Exception as e:
+            logger.error("Scan error for user %d: %s", uid, e)
+        finally:
+            current_user_id.reset(token)
+
+
+async def _run_user_scan(bot: Bot, user_id: int) -> None:
+    """Execute scan for a single user (context already set)."""
     monitoring = await get_setting("monitoring_enabled")
     if monitoring != "true":
-        logger.debug("Monitoring is disabled, skipping cycle")
         return
 
     # Load proxies
@@ -93,13 +110,12 @@ async def run_scan_cycle(bot: Bot) -> None:
     cookie_provider = CookieProvider(proxy_url=first_proxy)
     api = AvitoAPI(proxy_manager, cookie_provider=cookie_provider)
 
-    chat_id = await get_setting("telegram_chat_id") or config.TELEGRAM_CHAT_ID
+    chat_id = await get_setting("telegram_chat_id") or str(user_id)
     max_seller_str = await get_setting("max_seller_items") or str(config.MAX_SELLER_ITEMS)
     max_seller_items = int(max_seller_str)
 
     items = await get_active_items()
     if not items:
-        logger.debug("No active items to scan")
         await api.close()
         return
 
@@ -110,7 +126,10 @@ async def run_scan_cycle(bot: Bot) -> None:
 
     try:
         for item in items:
-            logger.info("Scanning item: %s (url=%s)", item["name"], item["avito_url"][:80])
+            logger.info(
+                "User %d: scanning item: %s (url=%s)",
+                user_id, item["name"], item["avito_url"][:80],
+            )
 
             # Build a search_query-like dict for the API
             search_query = {"avito_url": item["avito_url"], "keyword": item["name"]}
@@ -243,13 +262,13 @@ async def run_scan_cycle(bot: Bot) -> None:
             await api.delay()
 
     except Exception as e:
-        logger.error("Scan cycle error: %s", e)
+        logger.error("Scan cycle error for user %d: %s", user_id, e)
     finally:
         await api.close()
 
     logger.info(
-        "Scan cycle complete: %d items, %d new, %d filtered, %d alerts, %d errors",
-        len(items), total_new, total_filtered, total_alerts, total_errors,
+        "User %d scan complete: %d items, %d new, %d filtered, %d alerts, %d errors",
+        user_id, len(items), total_new, total_filtered, total_alerts, total_errors,
     )
 
     # Check if all proxies are dead

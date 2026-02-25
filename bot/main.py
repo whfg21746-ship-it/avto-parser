@@ -8,8 +8,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import config
 from bot.handlers import categories, items, settings, start
-from db.database import init_db
-from db.models import get_setting
+from bot.middlewares.user_db import UserDBMiddleware
 from parser.scheduler import run_scan_cycle
 
 logging.basicConfig(
@@ -33,12 +32,13 @@ async def main() -> None:
         logger.error("TELEGRAM_BOT_TOKEN is not set")
         sys.exit(1)
 
-    # Initialize database
-    await init_db()
-
     bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
+
+    # Per-user database middleware (must be registered before routers)
+    dp.message.middleware(UserDBMiddleware())
+    dp.callback_query.middleware(UserDBMiddleware())
 
     # Register routers
     dp.include_router(start.router)
@@ -49,19 +49,16 @@ async def main() -> None:
     # Set up scheduler
     scheduler = AsyncIOScheduler()
 
-    interval_str = await get_setting("scan_interval_seconds")
-    interval = int(interval_str) if interval_str else config.SCAN_INTERVAL
-
     scheduler.add_job(
         scheduled_scan,
         "interval",
-        seconds=interval,
+        seconds=config.SCAN_INTERVAL,
         args=[bot],
         id="avito_scan",
         replace_existing=True,
     )
     scheduler.start()
-    logger.info("Scheduler started with interval %d seconds", interval)
+    logger.info("Scheduler started with interval %d seconds", config.SCAN_INTERVAL)
 
     try:
         logger.info("Bot starting...")
