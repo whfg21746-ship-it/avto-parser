@@ -14,8 +14,8 @@ from db.database import current_user_id, ensure_db_initialized, get_all_user_ids
 from db.models import (
     get_active_items,
     get_setting,
-    has_seen_ads,
     is_ad_seen,
+    mark_item_first_scan_done,
     save_seen_ad,
 )
 import config
@@ -158,14 +158,14 @@ async def run_scan_cycle(bot: Bot) -> None:
 
 
 async def _run_user_scan(bot: Bot, user_id: int) -> None:
-    """Execute AI-first scan for a single user.
+    """Execute scan for a single user.
 
     Pipeline per ad:
     1. Dedup (seen_ads) — free
     2. Instant-reject patterns in title — free
     3. Extract details from search result
-    4. Seller filter (company / too many ads) — free
-    5. Fetch ad page for description
+    4. Fetch ad page for description + seller data
+    5. >>> SELLER FILTER (company / too many ads) — BEFORE AI <<<
     6. Instant-reject patterns in description — free
     7. >>> AI ANALYSIS <<< (every ad that passes pre-filters)
     8. Save result, alert if BUY or CHECK
@@ -252,10 +252,10 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
 
             logger.info("Item '%s': %d listings found", item["name"], len(listings))
 
-            # Baseline scan: first time — save all ads as seen
-            if not await has_seen_ads(item["id"]):
+            # Baseline scan: first time — save all ads as seen, NO AI
+            if not item.get("first_scan_done"):
                 logger.info(
-                    "First scan for item '%s': saving %d existing ads as baseline",
+                    "First scan for '%s': marking %d existing ads as seen",
                     item["name"], len(listings),
                 )
                 for listing in listings:
@@ -265,8 +265,9 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                         price=listing.get("price", 0),
                         title=listing.get("title", ""),
                         url=listing.get("url", ""),
-                        skip_reason="existed_before_scan_start",
+                        skip_reason="existed_before_scan",
                     )
+                await mark_item_first_scan_done(item["id"])
                 await api.delay()
                 continue
 
@@ -319,12 +320,36 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                     )
                     continue
 
-                # (d) Seller filter — free
+                # (d) Fetch full ad page for description + seller data
+                ad_url = details.get("url", "")
+                try:
+                    extra = await api.fetch_ad_extra(ad_url)
+                    if extra.get("description"):
+                        details["description"] = extra["description"]
+                    # Always prefer ad page seller data (more complete)
+                    if extra.get("seller_type"):
+                        details["seller_type"] = extra["seller_type"]
+                    if extra.get("seller_active_items"):
+                        details["seller_active_items"] = extra["seller_active_items"]
+                    if extra.get("seller_category_items"):
+                        details["seller_category_items"] = extra["seller_category_items"]
+                    await asyncio.sleep(random.uniform(1.0, 3.0))
+                except Exception as e:
+                    logger.warning("Failed to fetch ad extra for %s: %s", ad_id, e)
+
+                # (e) >>> SELLER CHECK (before AI!) <<<
+                seller_type = details.get("seller_type", "private")
+                seller_items = details.get("seller_active_items", 0)
+                seller_cat_items = details.get("seller_category_items", 0)
+                logger.info(
+                    "Seller check: ad_id=%s, type=%s, items=%d, cat_items=%d",
+                    ad_id, seller_type, seller_items, seller_cat_items,
+                )
                 seller_rejected, seller_reason = should_reject_seller(
-                    seller_type=details.get("seller_type", "private"),
-                    seller_active_items=details.get("seller_active_items", 0),
+                    seller_type=seller_type,
+                    seller_active_items=seller_items,
                     max_seller_items=max_seller_items,
-                    seller_category_items=details.get("seller_category_items", 0),
+                    seller_category_items=seller_cat_items,
                     max_seller_category_items=max_seller_category_items,
                 )
                 if seller_rejected:
@@ -339,50 +364,6 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                         skip_reason=seller_reason,
                     )
                     continue
-
-                # (e) Fetch full ad page for description + seller data
-                ad_url = details.get("url", "")
-                try:
-                    extra = await api.fetch_ad_extra(ad_url)
-                    if extra.get("description"):
-                        details["description"] = extra["description"]
-                    # Update seller data from ad page
-                    if extra.get("seller_type") and not details.get("seller_type"):
-                        details["seller_type"] = extra["seller_type"]
-                    if extra.get("seller_active_items") and not details.get("seller_active_items"):
-                        details["seller_active_items"] = extra["seller_active_items"]
-                    if extra.get("seller_category_items"):
-                        details["seller_category_items"] = extra["seller_category_items"]
-
-                    # Re-check seller filter with updated data from ad page
-                    has_new_seller_data = (
-                        extra.get("seller_active_items")
-                        or extra.get("seller_category_items")
-                        or extra.get("seller_type")
-                    )
-                    if has_new_seller_data:
-                        seller_rej2, seller_rsn2 = should_reject_seller(
-                            seller_type=details.get("seller_type", "private"),
-                            seller_active_items=details.get("seller_active_items", 0),
-                            max_seller_items=max_seller_items,
-                            seller_category_items=details.get("seller_category_items", 0),
-                            max_seller_category_items=max_seller_category_items,
-                        )
-                        if seller_rej2:
-                            logger.info("[SKIP] ad_id=%s reason=%r (ad page)", ad_id, seller_rsn2)
-                            item_seller_skip += 1
-                            total_filtered += 1
-                            await save_seen_ad(
-                                ad_id=ad_id, item_id=item["id"],
-                                price=details.get("price", 0),
-                                title=details.get("title", ""),
-                                url=details.get("url", ""),
-                                skip_reason=seller_rsn2,
-                            )
-                            continue
-                    await asyncio.sleep(random.uniform(1.0, 3.0))
-                except Exception as e:
-                    logger.warning("Failed to fetch ad extra for %s: %s", ad_id, e)
 
                 # (f) Instant-reject patterns in DESCRIPTION — free
                 description = details.get("description", "")
@@ -494,7 +475,7 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
         try:
             await bot.send_message(
                 chat_id=chat_id,
-                text="\u26a0\ufe0f Все прокси недоступны. Они будут восстановлены через 5 мин.",
+                text="\u26a0\ufe0f Все прокси недоступны. Они будут восстановлены через 2 мин.",
             )
         except Exception as e:
             logger.error("Failed to send proxy alert: %s", e)

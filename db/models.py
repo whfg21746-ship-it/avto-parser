@@ -192,6 +192,15 @@ async def delete_item(item_id: int) -> None:
     await db.commit()
 
 
+async def mark_item_first_scan_done(item_id: int) -> None:
+    """Mark item as having completed its first (baseline) scan."""
+    db = await get_db()
+    await db.execute(
+        "UPDATE items SET first_scan_done = 1 WHERE id = ?", (item_id,)
+    )
+    await db.commit()
+
+
 # --- Seen Ads ---
 
 async def has_seen_ads(item_id: int) -> bool:

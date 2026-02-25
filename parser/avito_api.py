@@ -762,6 +762,16 @@ class AvitoAPI:
         if seller_data.get("seller_type"):
             result["seller_type"] = seller_data["seller_type"]
 
+        logger.info(
+            "fetch_ad_extra: url=%s, seller_type=%s, "
+            "seller_items=%d, seller_cat_items=%d, desc_len=%d",
+            ad_url[:80],
+            result["seller_type"] or "unknown",
+            result["seller_active_items"],
+            result["seller_category_items"],
+            len(result["description"]),
+        )
+
         return result
 
     @staticmethod
@@ -777,10 +787,14 @@ class AvitoAPI:
 
         # Collect all seller-like dicts from known paths
         seller_dicts: list[dict] = []
+
+        # Direct top-level keys
         for key in ("seller", "sellerInfo", "userInfo", "user"):
             obj = data.get(key, {})
             if isinstance(obj, dict) and obj:
                 seller_dicts.append(obj)
+
+        # Inside data.* keys
         inner = data.get("data", {})
         if isinstance(inner, dict):
             for key in ("seller", "sellerInfo"):
@@ -788,17 +802,36 @@ class AvitoAPI:
                 if isinstance(obj, dict) and obj:
                     seller_dicts.append(obj)
 
+        # Deep search: Avito ad pages embed data in nested component keys
+        # like "@avito/bx-single-page/buildBuyerItemView"
+        for top_key, top_val in data.items():
+            if not isinstance(top_val, dict):
+                continue
+            # Search up to 2 levels deep for seller-like keys
+            for key in ("seller", "sellerInfo", "userInfo", "user"):
+                obj = top_val.get(key)
+                if isinstance(obj, dict) and obj:
+                    seller_dicts.append(obj)
+            # Also check data.*.data.seller
+            inner2 = top_val.get("data", {})
+            if isinstance(inner2, dict):
+                for key in ("seller", "sellerInfo"):
+                    obj = inner2.get(key)
+                    if isinstance(obj, dict) and obj:
+                        seller_dicts.append(obj)
+
         for seller in seller_dicts:
             # Total active items
             if result["active_items"] == 0:
                 for field in ("itemsCount", "activeItems", "totalItems",
-                              "itemsActive"):
+                              "itemsActive", "closedItems", "allItemsCount"):
                     val = seller.get(field)
                     if isinstance(val, (int, float)) and val > 0:
                         result["active_items"] = int(val)
                         break
                 if result["active_items"] == 0:
-                    for field in ("itemsText", "activeItemsText"):
+                    for field in ("itemsText", "activeItemsText",
+                                  "closedItemsText", "allItemsText"):
                         text = seller.get(field, "")
                         if text:
                             match = re.search(r"(\d+)", str(text))
@@ -833,6 +866,12 @@ class AvitoAPI:
                 # Also check for developerId (shop indicator)
                 if not result["seller_type"] and seller.get("developerId"):
                     result["seller_type"] = "shop"
+
+        if seller_dicts:
+            logger.debug(
+                "Seller data extraction: found %d seller dicts, result=%s",
+                len(seller_dicts), result,
+            )
 
         return result
 

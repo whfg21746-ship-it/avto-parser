@@ -123,6 +123,15 @@ async def ensure_db_initialized() -> None:
             )
             logger.info("User %d: added custom_prompt to %s", user_id, table)
 
+    # Migrate: add first_scan_done column to items if missing
+    cursor = await db.execute("PRAGMA table_info(items)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    if "first_scan_done" not in columns:
+        await db.execute(
+            "ALTER TABLE items ADD COLUMN first_scan_done BOOLEAN DEFAULT 0"
+        )
+        logger.info("User %d: added first_scan_done to items", user_id)
+
     # Migrate: remove deprecated columns (threshold_price, model_pattern, market_price)
     # AI-first: no more price thresholds, AI decides profitability
     cursor = await db.execute("PRAGMA table_info(items)")
@@ -141,6 +150,7 @@ async def ensure_db_initialized() -> None:
             "avito_url TEXT NOT NULL, "
             "custom_prompt TEXT DEFAULT NULL, "
             "is_active BOOLEAN DEFAULT 1, "
+            "first_scan_done BOOLEAN DEFAULT 0, "
             "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
         )
         await db.execute(

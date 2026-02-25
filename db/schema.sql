@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS items (
     avito_url TEXT NOT NULL,
     custom_prompt TEXT DEFAULT NULL,
     is_active BOOLEAN DEFAULT 1,
+    first_scan_done BOOLEAN DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
