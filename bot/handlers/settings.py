@@ -209,8 +209,10 @@ async def process_interval(message: Message, state: FSMContext) -> None:
 async def start_edit_proxy(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(SettingsFSM.entering_proxy)
     await callback.message.edit_text(
-        "Введи список прокси (JSON массив):\n"
-        'Пример: ["http://user:pass@host:port"]\n\n'
+        "Введи прокси — по одному на строку:\n"
+        "user:pass@host:port\n"
+        "user:pass@host:port\n\n"
+        "Префикс http:// добавится автоматически.\n"
         'Отправь "clear" чтобы очистить.',
         reply_markup=back_main_keyboard(),
     )
@@ -229,18 +231,42 @@ async def process_proxy(message: Message, state: FSMContext) -> None:
         )
         return
 
+    # Try JSON first (backward compatible)
+    proxies: list[str] = []
     try:
-        proxies = json.loads(text)
-        if not isinstance(proxies, list):
-            raise ValueError
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            proxies = [str(p).strip() for p in parsed if str(p).strip()]
     except (json.JSONDecodeError, ValueError):
-        await message.answer("Некорректный JSON. Отправь массив строк:")
+        pass
+
+    # Fallback: parse as plain text (one proxy per line, or space-separated)
+    if not proxies:
+        for line in text.replace(" ", "\n").split("\n"):
+            line = line.strip().strip(",").strip('"').strip("'")
+            if not line:
+                continue
+            proxies.append(line)
+
+    if not proxies:
+        await message.answer("Не удалось распознать прокси. Введи по одному на строку:")
         return
 
-    await set_setting("proxy_list", json.dumps(proxies))
+    # Auto-add http:// prefix if missing
+    normalized = []
+    for p in proxies:
+        if not p.startswith(("http://", "https://", "socks")):
+            p = f"http://{p}"
+        normalized.append(p)
+
+    await set_setting("proxy_list", json.dumps(normalized))
     await state.clear()
+
+    preview = "\n".join(f"  {i+1}. {p}" for i, p in enumerate(normalized[:5]))
+    if len(normalized) > 5:
+        preview += f"\n  ... и ещё {len(normalized) - 5}"
     await message.answer(
-        f"\u2705 Прокси обновлены: {len(proxies)} шт.",
+        f"\u2705 Прокси обновлены: {len(normalized)} шт.\n\n{preview}",
         reply_markup=back_main_keyboard(),
     )
 
