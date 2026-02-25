@@ -62,26 +62,11 @@ async def main() -> None:
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
 
-    # Force-cancel any stale Telegram polling session.
-    logger.info("Clearing stale Telegram sessions...")
-    try:
-        await asyncio.wait_for(bot.delete_webhook(drop_pending_updates=True), timeout=10)
-    except Exception as e:
-        logger.warning("delete_webhook failed: %s", e)
-    await asyncio.sleep(1)
-    # Short getUpdates to steal the polling slot (hard 5s timeout per attempt)
-    for attempt in range(3):
-        try:
-            await asyncio.wait_for(
-                bot.get_updates(offset=-1, timeout=1), timeout=5
-            )
-            break
-        except asyncio.TimeoutError:
-            logger.warning("get_updates attempt %d timed out", attempt + 1)
-        except Exception:
-            pass
-        await asyncio.sleep(1)
-    logger.info("Stale sessions cleared, starting bot...")
+    # ExecStartPre already killed old processes.
+    # Just wait for Telegram to release the old polling slot.
+    logger.info("Waiting 5s for Telegram to release old polling session...")
+    await asyncio.sleep(5)
+    logger.info("Starting bot...")
 
     # Per-user database middleware (must be registered before routers)
     dp.message.middleware(UserDBMiddleware())
