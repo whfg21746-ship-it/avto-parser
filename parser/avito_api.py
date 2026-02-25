@@ -21,7 +21,6 @@ BROWSER_PROFILES = [
     "chrome136",
     "chrome142",
     "safari18_0",
-    "safari18_2",
 ]
 
 BASE_URL = "https://www.avito.ru"
@@ -65,7 +64,7 @@ class AvitoAPI:
         """Create or recreate session with a fresh browser fingerprint."""
         if self._session is not None:
             try:
-                self._session.close()
+                await self._session.close()
             except Exception:
                 pass
 
@@ -119,7 +118,7 @@ class AvitoAPI:
     async def close(self) -> None:
         if self._session is not None:
             try:
-                self._session.close()
+                await self._session.close()
             except Exception:
                 pass
             self._session = None
