@@ -41,6 +41,7 @@ class RenameCategoryFSM(StatesGroup):
 
 class SettingsFSM(StatesGroup):
     entering_interval = State()
+    choosing_proxy_type = State()
     entering_proxy = State()
     entering_max_seller = State()
     entering_city = State()

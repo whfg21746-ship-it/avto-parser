@@ -207,13 +207,44 @@ async def process_interval(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "setting_proxy")
 async def start_edit_proxy(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(SettingsFSM.choosing_proxy_type)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="SOCKS5", callback_data="proxy_type_socks5")],
+        [InlineKeyboardButton(text="HTTP/HTTPS", callback_data="proxy_type_http")],
+        [InlineKeyboardButton(text="Очистить прокси", callback_data="proxy_type_clear")],
+        [InlineKeyboardButton(text="\u2b05 Назад", callback_data="back_main")],
+    ])
+    await callback.message.edit_text(
+        "Выбери тип прокси:",
+        reply_markup=kb,
+    )
+    await callback.answer()
+
+
+@router.callback_query(
+    SettingsFSM.choosing_proxy_type,
+    F.data.in_({"proxy_type_socks5", "proxy_type_http", "proxy_type_clear"}),
+)
+async def process_proxy_type(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.data == "proxy_type_clear":
+        await set_setting("proxy_list", "[]")
+        await state.clear()
+        await callback.message.edit_text(
+            "\u2705 Прокси очищены.",
+            reply_markup=back_main_keyboard(),
+        )
+        await callback.answer()
+        return
+
+    proxy_scheme = "socks5" if callback.data == "proxy_type_socks5" else "http"
+    await state.update_data(proxy_scheme=proxy_scheme)
     await state.set_state(SettingsFSM.entering_proxy)
     await callback.message.edit_text(
+        f"Тип: {proxy_scheme.upper()}\n\n"
         "Введи прокси — по одному на строку:\n"
         "user:pass@host:port\n"
         "user:pass@host:port\n\n"
-        "Префикс http:// добавится автоматически.\n"
-        'Отправь "clear" чтобы очистить.',
+        f"Префикс {proxy_scheme}:// добавится автоматически.",
         reply_markup=back_main_keyboard(),
     )
     await callback.answer()
@@ -222,14 +253,9 @@ async def start_edit_proxy(callback: CallbackQuery, state: FSMContext) -> None:
 @router.message(SettingsFSM.entering_proxy)
 async def process_proxy(message: Message, state: FSMContext) -> None:
     text = message.text.strip()
-    if text.lower() == "clear":
-        await set_setting("proxy_list", "[]")
-        await state.clear()
-        await message.answer(
-            "\u2705 Прокси очищены.",
-            reply_markup=back_main_keyboard(),
-        )
-        return
+
+    data = await state.get_data()
+    scheme = data.get("proxy_scheme", "http")
 
     # Try JSON first (backward compatible)
     proxies: list[str] = []
@@ -252,11 +278,11 @@ async def process_proxy(message: Message, state: FSMContext) -> None:
         await message.answer("Не удалось распознать прокси. Введи по одному на строку:")
         return
 
-    # Auto-add http:// prefix if missing
+    # Auto-add scheme prefix if missing
     normalized = []
     for p in proxies:
         if not p.startswith(("http://", "https://", "socks")):
-            p = f"http://{p}"
+            p = f"{scheme}://{p}"
         normalized.append(p)
 
     await set_setting("proxy_list", json.dumps(normalized))
