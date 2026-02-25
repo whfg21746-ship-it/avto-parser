@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 
@@ -74,22 +75,29 @@ def _format_alert(item: dict, ad_data: dict, verdict: dict) -> str:
     return "\n".join(lines)
 
 
+async def _scan_user_with_context(bot: Bot, uid: int) -> None:
+    """Run scan for a single user with its own context."""
+    token = current_user_id.set(uid)
+    try:
+        await ensure_db_initialized()
+        await _run_user_scan(bot, uid)
+    except Exception as e:
+        logger.error("Scan error for user %d: %s", uid, e)
+    finally:
+        current_user_id.reset(token)
+
+
 async def run_scan_cycle(bot: Bot) -> None:
-    """Execute scan cycle for all registered users."""
+    """Execute scan cycle for all registered users in parallel."""
     user_ids = get_all_user_ids()
     if not user_ids:
         logger.debug("No users found, skipping scan cycle")
         return
 
-    for uid in user_ids:
-        token = current_user_id.set(uid)
-        try:
-            await ensure_db_initialized()
-            await _run_user_scan(bot, uid)
-        except Exception as e:
-            logger.error("Scan error for user %d: %s", uid, e)
-        finally:
-            current_user_id.reset(token)
+    logger.info("Starting parallel scan for %d users", len(user_ids))
+    await asyncio.gather(
+        *(_scan_user_with_context(bot, uid) for uid in user_ids)
+    )
 
 
 async def _run_user_scan(bot: Bot, user_id: int) -> None:
