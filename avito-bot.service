@@ -6,9 +6,12 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/root/avto-parser
+ExecStartPre=/bin/bash -c '/usr/bin/pkill -9 -f "python.*bot\\.main" || true'
+ExecStartPre=/bin/sleep 3
 ExecStart=/root/avto-parser/venv/bin/python3 -m bot.main
 Restart=no
 Environment=PYTHONUNBUFFERED=1
+PIDFile=/tmp/avito-bot.pid
 
 [Install]
 WantedBy=multi-user.target
