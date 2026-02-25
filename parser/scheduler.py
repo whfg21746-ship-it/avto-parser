@@ -207,6 +207,13 @@ async def _run_user_scan(bot: Bot, user_id: int) -> None:
                 # (b) Price threshold check
                 if listing["price"] > item["threshold_price"]:
                     item_price_skip += 1
+                    await save_seen_ad(
+                        ad_id=ad_id, item_id=item["id"],
+                        price=listing.get("price", 0),
+                        title=listing.get("title", ""),
+                        url=listing.get("url", ""),
+                        skip_reason=f"price {listing['price']} > {item['threshold_price']}",
+                    )
                     continue
 
                 # (c) Instant-reject patterns in TITLE

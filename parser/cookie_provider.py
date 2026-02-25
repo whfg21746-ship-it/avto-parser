@@ -29,6 +29,9 @@ FT_POLL_INTERVAL = 5
 class CookieProvider:
     """Acquires and caches Avito cookies via headless browser."""
 
+    # Class-level flag: if Playwright can't start (missing libs), don't retry
+    _browser_broken: bool = False
+
     def __init__(self, proxy_url: str | None = None) -> None:
         self._proxy_url = proxy_url
         self._cookies: dict[str, str] = {}
@@ -56,6 +59,10 @@ class CookieProvider:
 
     async def refresh(self) -> dict[str, str]:
         """Force-refresh cookies via Playwright."""
+        if CookieProvider._browser_broken:
+            logger.debug("Playwright broken, skipping cookie refresh")
+            return self._cookies
+
         logger.info("Refreshing Avito cookies via Playwright...")
         try:
             self._cookies = await self._get_cookies_playwright()
@@ -71,7 +78,16 @@ class CookieProvider:
                     "Got %d cookies but NO ft cookie!", len(self._cookies)
                 )
         except Exception as e:
+            err_msg = str(e)
             logger.error("Failed to get cookies via Playwright: %s", e)
+            # If browser can't start (missing libs), stop retrying
+            if "cannot open shared object" in err_msg or "browser has been closed" in err_msg:
+                CookieProvider._browser_broken = True
+                logger.warning(
+                    "Playwright is permanently unavailable (missing system libs). "
+                    "Install deps: playwright install-deps chromium. "
+                    "Continuing without cookies."
+                )
             self._cookies = {}
         return self._cookies
 
